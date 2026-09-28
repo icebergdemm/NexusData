@@ -3,7 +3,7 @@ export interface ViewerChannel {
   category_id?: string | null; archived?: boolean; type: string
 }
 export interface ViewerMember { discord_id: string; display_name: string | null; username: string | null; avatar_url?: string | null; role_ids: string[] }
-export interface ViewerRole { id: string; name: string; color: string | null; position: number }
+export interface ViewerRole { id: string; name: string; color: string | null; position: number; hoist?: boolean }
 
 export function groupThreadsByParent<T extends ViewerChannel>(channels: T[]) {
   const channelsById = new Map<string, T>(channels.filter((c) => c.type !== "thread").map((c) => [c.id, c]))
@@ -24,11 +24,13 @@ export function mergeViewerChannels<T extends { id: string }>(current: T[], inco
 }
 
 export function groupMembersByRole(members: ViewerMember[], roles: ViewerRole[]) {
-  const sortedRoles = [...roles].sort((a, b) => b.position - a.position)
-  return [
-    ...sortedRoles.map((role) => ({ role, members: members.filter((member) => member.role_ids.includes(role.id)) })).filter((group) => group.members.length),
-    { role: null, members: members.filter((member) => !member.role_ids.some((id) => sortedRoles.some((role) => role.id === id))) },
-  ].filter((group) => group.members.length)
+  const groups = [...roles].filter((role) => role.hoist).sort((a, b) => b.position - a.position).map((role) => ({ role, label: role.name, members: [] as ViewerMember[] }))
+  const otherMembers = { role: null, label: "Участники", members: [] as ViewerMember[] }
+  for (const member of members) {
+    const group = groups.find(({ role }) => member.role_ids.includes(role.id))
+    ;(group ?? otherMembers).members.push(member)
+  }
+  return [...groups, otherMembers].filter((group) => group.members.length)
 }
 
 export function applyVoiceState<T extends { id: string; voice_members?: { id: string }[] }>(channels: T[], event: { channel_id: string; voice: { member_id: string; connected: boolean; member?: { id: string } } }) {

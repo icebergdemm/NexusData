@@ -2217,7 +2217,7 @@ async def viewer_get_roles() -> list:
     guild = _viewer_guild()
     return [
         {"id": str(r.id), "name": r.name, "color": f"#{r.color.value:06x}" if r.color.value else None,
-         "position": r.position, "managed": r.managed, "mentionable": r.mentionable}
+         "position": r.position, "managed": r.managed, "mentionable": r.mentionable, "hoist": r.hoist}
         for r in guild.roles if r.name != "@everyone"
     ]
 

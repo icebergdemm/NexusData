@@ -39,7 +39,7 @@ def create_stub_app(db_url: str) -> FastAPI:
         if not db.query(DiscordMember).count():
             db.add_all([
                 DiscordMember(discord_id="1001", username="captain", display_name="Снегирь-2", avatar="", role_ids=["r-captain", "r-staff"]),
-                DiscordMember(discord_id="1002", username="mechanic", display_name="Тайфун", avatar="", role_ids=["r-crew"]),
+                DiscordMember(discord_id="1002", username="mechanic", display_name="Тайфун", avatar="", role_ids=["r-crew", "r-title"]),
                 DiscordMember(discord_id="1003", username="medic", display_name="Мурена", avatar="", role_ids=[]),
             ])
             db.commit()
@@ -61,9 +61,10 @@ def create_stub_app(db_url: str) -> FastAPI:
         "2101": [],
     }
     roles = [
-        {"id": "r-staff", "name": "Администрация", "color": "#5865f2", "position": 50, "managed": False, "mentionable": True},
-        {"id": "r-captain", "name": "Капитаны", "color": "#ed4245", "position": 40, "managed": False, "mentionable": True},
-        {"id": "r-crew", "name": "Экипаж", "color": "#23a55a", "position": 10, "managed": False, "mentionable": True},
+        {"id": "r-staff", "name": "Администрация", "color": "#5865f2", "position": 50, "managed": False, "mentionable": True, "hoist": True},
+        {"id": "r-captain", "name": "Капитаны", "color": "#ed4245", "position": 40, "managed": False, "mentionable": True, "hoist": True},
+        {"id": "r-crew", "name": "Экипаж", "color": "#23a55a", "position": 10, "managed": False, "mentionable": True, "hoist": True},
+        {"id": "r-title", "name": "===== должность =====", "color": None, "position": 5, "managed": False, "mentionable": False, "hoist": False},
     ]
 
     async def viewer_tree():

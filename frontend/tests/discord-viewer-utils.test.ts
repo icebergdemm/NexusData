@@ -21,16 +21,18 @@ test("archive pages merge into the channel tree without duplicating threads", ()
   ])
 })
 
-test("members appear in each Discord role group with unassigned members at bottom", () => {
+test("members appear once under their highest hoisted role", () => {
   const grouped = groupMembersByRole([
     { discord_id: "1", username: "a", display_name: "A", role_ids: ["r1", "r2"] },
-    { discord_id: "2", username: "b", display_name: "B", role_ids: [] },
+    { discord_id: "2", username: "b", display_name: "B", role_ids: ["hidden"] },
+    { discord_id: "3", username: "c", display_name: "C", role_ids: [] },
   ], [
-    { id: "r1", name: "Low", color: null, position: 1 },
-    { id: "r2", name: "High", color: "#fff", position: 2 },
+    { id: "r1", name: "Low", color: null, position: 1, hoist: true },
+    { id: "r2", name: "High", color: "#fff", position: 2, hoist: true },
+    { id: "hidden", name: "===== должность =====", color: null, position: 3, hoist: false },
   ])
-  assert.deepEqual(grouped.map((group) => [group.role?.name ?? "none", group.members.map((member) => member.discord_id)]), [
-    ["High", ["1"]], ["Low", ["1"]], ["none", ["2"]],
+  assert.deepEqual(grouped.map((group) => [group.label, group.members.map((member) => member.discord_id)]), [
+    ["High", ["1"]], ["Участники", ["2", "3"]],
   ])
 })
 

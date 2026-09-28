@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactElement } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { Input } from "@/components/ui/input"
@@ -8,6 +8,8 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Checkbox } from "@/components/ui/checkbox"
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Hash, Volume2, GitBranch, Paperclip, Send, Download, Search, Loader2, X, ShieldCheck, Reply, Headphones, ChevronDown, Users, MoreHorizontal, Copy, Link2, Trash2, Radio } from "lucide-react"
 import { api, ApiError } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
@@ -46,7 +48,7 @@ interface MemberRow {
   steam: { steamid: string | null; player_name: string | null; avatar_url: string | null; confirmed: boolean } | null
 }
 interface MemberDetail extends MemberRow { last_synced_at: string | null; can_manage_roles: boolean }
-interface RoleRow { id: string; name: string; color: string | null; position: number; managed: boolean; mentionable: boolean }
+interface RoleRow { id: string; name: string; color: string | null; position: number; managed: boolean; mentionable: boolean; hoist: boolean }
 
 function fmtSize(n: number): string {
   if (n < 1024) return `${n} Б`
@@ -56,6 +58,24 @@ function fmtSize(n: number): string {
 
 function initials(name: string): string {
   return name.trim().slice(0, 2).toUpperCase()
+}
+
+interface ChannelMenuAction { label: string; icon: ComponentType<{ className?: string }>; onSelect?: () => void; href?: string; destructive?: boolean }
+function ChannelMenuItems({ actions, context }: { actions: ChannelMenuAction[]; context: boolean }) {
+  const itemClass = "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-[#dbdee1] hover:bg-[#35373c]"
+  return <>
+    {actions.map((action) => {
+      const content = <><action.icon className="size-3.5" />{action.label}</>
+      if (action.href) {
+        return context
+          ? <ContextMenuItem key={action.label} asChild className={itemClass}><a href={action.href} download>{content}</a></ContextMenuItem>
+          : <DropdownMenuItem key={action.label} asChild className={itemClass}><a href={action.href} download>{content}</a></DropdownMenuItem>
+      }
+      return context
+        ? <ContextMenuItem key={action.label} onSelect={action.onSelect} variant={action.destructive ? "destructive" : "default"} className={itemClass}>{content}</ContextMenuItem>
+        : <DropdownMenuItem key={action.label} onSelect={action.onSelect} variant={action.destructive ? "destructive" : "default"} className={itemClass}>{content}</DropdownMenuItem>
+    })}
+  </>
 }
 
 // ── Лента сообщений ─────────────────────────────────────────────────────
@@ -70,7 +90,7 @@ function MessageRow({ msg, guildId, channelId, onReply, onReaction, onReactionUs
   return (
     <div data-message-id={msg.id} className="group relative flex gap-2.5 rounded px-2 py-1.5 hover:bg-[#2e3035]" onContextMenu={(event) => { event.preventDefault(); setMenuOpen(true) }}>
       <Avatar className="mt-0.5 size-9 shrink-0">
-        <AvatarImage src={msg.author.avatar_url ?? undefined} />
+        <AvatarImage src={msg.author.avatar_url ?? undefined} loading="lazy" />
         <AvatarFallback>{initials(msg.author.display_name)}</AvatarFallback>
       </Avatar>
       <div className="min-w-0 flex-1">
@@ -100,7 +120,7 @@ function MessageRow({ msg, guildId, channelId, onReply, onReaction, onReactionUs
         {msg.attachments.map((a) => (
           <div key={a.id} className="mt-1">
             {(a.content_type || "").startsWith("image/") ? (
-              <img src={a.url} alt={a.filename} className="max-h-72 max-w-sm rounded border border-[#3b3d43]" />
+              <img src={a.url} alt={a.filename} loading="lazy" decoding="async" className="max-h-72 max-w-sm rounded border border-[#3b3d43]" />
             ) : (
               <a href={a.url} target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded border border-[#3b3d43] bg-[#2b2d31] px-3 py-2 text-xs text-[#00a8fc] hover:underline">
                 <Paperclip className="size-3.5" /> {a.filename} <span className="text-[#949ba4]">({fmtSize(a.size)})</span>
@@ -455,9 +475,14 @@ function MemberDetailDialog({ discordId, roles, voiceTargets, onVoiceMove, onClo
 
 function MembersPanel({ onSelect, draggingMember, setDraggingMember, voiceMemberIds }: { onSelect: (id: string) => void; draggingMember: string | null; setDraggingMember: (id: string | null) => void; voiceMemberIds: Set<string> }) {
   const [search, setSearch] = useState("")
+  const [appliedSearch, setAppliedSearch] = useState("")
+  useEffect(() => {
+    const timer = window.setTimeout(() => setAppliedSearch(search.trim()), 250)
+    return () => window.clearTimeout(timer)
+  }, [search])
   const { data, isLoading } = useQuery({
-    queryKey: ["discord-viewer-members", search],
-    queryFn: () => api.get<{ total: number; members: MemberRow[] }>(`/api/v1/admin/discord-bot/viewer/members?search=${encodeURIComponent(search)}&limit=200`),
+    queryKey: ["discord-viewer-members", appliedSearch],
+    queryFn: () => api.get<{ total: number; members: MemberRow[] }>(`/api/v1/admin/discord-bot/viewer/members?search=${encodeURIComponent(appliedSearch)}&limit=200`),
   })
   const { data: rolesData } = useQuery({
     queryKey: ["discord-viewer-roles"],
@@ -470,10 +495,10 @@ function MembersPanel({ onSelect, draggingMember, setDraggingMember, voiceMember
       <div className="shrink-0 border-b border-[#1e1f22] p-2"><div className="relative"><Search className="absolute left-2.5 top-2.5 size-3.5 text-[#949ba4]" /><Input aria-label="Поиск участников" className="h-8 border-0 bg-[#1e1f22] pl-8 text-xs" placeholder="Найти участника" value={search} onChange={(e) => setSearch(e.target.value)} /></div></div>
       <div className="min-h-0 flex-1 overflow-y-auto p-2 text-[#dbdee1]">
         {isLoading && <p className="p-2 text-xs text-[#949ba4]">Загрузка…</p>}
-        {groups.map(({ role, members }) => <section key={role?.id ?? "none"} className="mb-3">
-          <div className="mb-1 flex items-center gap-1 px-1 text-[10px] font-bold uppercase tracking-wide text-[#949ba4]"><ChevronDown className="size-3" />{role && <span className="size-2 rounded-full" style={{ background: role.color ?? "#99aab5" }} />}{role?.name ?? "Без роли"} — {members.length}</div>
+        {groups.map(({ role, label, members }) => <section key={role?.id ?? "none"} className="mb-3">
+          <div className="mb-1 flex items-center gap-1 px-1 text-[10px] font-bold uppercase tracking-wide text-[#949ba4]"><ChevronDown className="size-3" />{role && <span className="size-2 rounded-full" style={{ background: role.color ?? "#99aab5" }} />}{label} — {members.length}</div>
           {members.map((mem) => <button key={mem.discord_id} draggable={voiceMemberIds.has(mem.discord_id)} onDragStart={() => setDraggingMember(mem.discord_id)} onDragEnd={() => setDraggingMember(null)} onClick={() => onSelect(mem.discord_id)} className={`flex w-full items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-[#35373c] ${draggingMember === mem.discord_id ? "opacity-40" : ""}`}>
-            <Avatar className="size-7"><AvatarImage src={mem.avatar_url ?? undefined} /><AvatarFallback className="text-[10px]">{initials(mem.display_name ?? mem.username ?? "?")}</AvatarFallback></Avatar>
+            <Avatar className="size-7"><AvatarImage src={mem.avatar_url ?? undefined} loading="lazy" /><AvatarFallback className="text-[10px]">{initials(mem.display_name ?? mem.username ?? "?")}</AvatarFallback></Avatar>
             <span className="min-w-0 flex-1 truncate text-xs">{mem.display_name ?? mem.username}</span>
           </button>)}
         </section>)}
@@ -529,7 +554,7 @@ function AuditLogPanel({ enabled }: { enabled: boolean }) {
     const timer = window.setInterval(() => loadAudit(null), 60000)
     return () => window.clearInterval(timer)
   }, [open, enabled, loadAudit, actorFilter, actionFilter])
-  return <section className={`flex shrink-0 flex-col border-t border-[#1e1f22] bg-[#313338] text-[#dbdee1] ${open ? "h-[210px]" : "h-9"}`}>
+  return <section className={`flex shrink-0 flex-col border-t border-[#1e1f22] bg-[#313338] text-[#dbdee1] ${open ? "h-[35vh] min-h-60 max-h-[420px]" : "h-9"}`}>
     <button type="button" onClick={() => setOpen((value) => !value)} className="flex h-9 w-full shrink-0 items-center gap-2 px-3 text-left text-sm font-semibold"><Radio className="size-4 text-[#5865f2]" />Журнал аудита Discord <span className="ml-auto text-xs font-normal text-[#949ba4]">{open ? "Свернуть" : "Развернуть"}</span></button>
     {open && <div className="flex min-h-0 flex-1 flex-col border-t border-[#1e1f22] p-2">
       {!enabled && <p className="p-3 text-xs text-[#949ba4]">Нужны manage_config сайта и VIEW_AUDIT_LOG у бота.</p>}
@@ -563,19 +588,13 @@ export function DiscordViewerTab() {
   const [searchResults, setSearchResults] = useState<{ messages: DiscordMessage[]; indexing?: boolean; retry_after?: number | null; has_more?: boolean } | null>(null)
   const [searchError, setSearchError] = useState("")
   const [jumpTo, setJumpTo] = useState<string | null>(null)
-  const [channelMenu, setChannelMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   const [memberAccess, setMemberAccess] = useState<string | null>(null)
   const [archivePages, setArchivePages] = useState<Record<string, ArchivePageState>>({})
-  const channelMenuRef = useRef<HTMLDivElement>(null)
   const threadsByParent = useMemo(() => groupThreadsByParent(tree?.channels ?? []), [tree?.channels])
 
   useEffect(() => {
     if (tree && !activeChannel && tree.channels.length) setActiveChannel(tree.channels[0].id)
   }, [tree, activeChannel])
-  useEffect(() => {
-    if (channelMenu) channelMenuRef.current?.querySelector<HTMLElement>("[role=menuitem]")?.focus()
-  }, [channelMenu])
-
   if (isLoading) return <p className="text-sm text-muted-foreground">Загрузка…</p>
   if (error) {
     const msg = error instanceof ApiError ? error.message : "Не удалось связаться с ботом"
@@ -591,12 +610,27 @@ export function DiscordViewerTab() {
     byCategory.get(key)!.push(c)
   }
 
-  const selectChannel = (item: TreeChannel) => { setActiveChannel(item.id); setJumpTo(null); setSearchResults(null); setChannelMenu(null) }
+  const selectChannel = (item: TreeChannel) => { setActiveChannel(item.id); setJumpTo(null); setSearchResults(null) }
   const moveMember = async (memberId: string, targetId: string) => {
     try { await api.post(`/api/v1/admin/discord-bot/viewer/members/${memberId}/voice`, { target_channel_id: targetId }); toast.success("Участник перемещён"); queryClient.invalidateQueries({ queryKey: ["discord-viewer-tree"] }) }
     catch (e) { toast.error((e as ApiError).message) }
     finally { setDraggingMember(null) }
   }
+  const channelActions = (item: TreeChannel): ChannelMenuAction[] => [
+    { label: "Копировать ID канала", icon: Copy, onSelect: () => { void navigator.clipboard.writeText(item.id) } },
+    { label: "Копировать ссылку Discord", icon: Link2, onSelect: () => { void navigator.clipboard.writeText(`https://discord.com/channels/${tree.guild.id}/${item.id}`) } },
+    { label: "Экспорт истории", icon: Download, href: `/api/v1/admin/discord-bot/viewer/channels/${item.id}/export` },
+    ...(tree.can_manage_roles ? [
+      { label: "Создать приглашение", icon: Link2, onSelect: async () => { try { const invite = await api.post<{ url: string }>(`/api/v1/admin/discord-bot/viewer/channels/${item.id}/invite`); await navigator.clipboard.writeText(invite.url); toast.success("Приглашение скопировано") } catch (e) { toast.error((e as ApiError).message) } } },
+      { label: "Доступ участников", icon: Users, onSelect: () => setMemberAccess(item.id) },
+      { label: "Удалить канал…", icon: Trash2, destructive: true, onSelect: async () => {
+        if (!window.confirm(`Удалить канал #${item.name}? Это действие нельзя отменить.`)) return
+        if (window.prompt(`Для подтверждения введите имя канала: ${item.name}`) !== item.name) return toast.error("Имя канала не совпало; удаление отменено")
+        try { await api.delete(`/api/v1/admin/discord-bot/viewer/channels/${item.id}`, { reason: `Удаление ${item.name} из Discord-вьюера` }); toast.success("Канал удалён"); setActiveChannel(null); await queryClient.invalidateQueries({ queryKey: ["discord-viewer-tree"] }) }
+        catch (e) { toast.error((e as ApiError).message) }
+      } },
+    ] : []),
+  ]
   const loadArchivedThreads = async (parent: TreeChannel) => {
     const sources = parent.type === "text" ? ["public", "joined_private"] : ["public"]
     const pending = sources.filter((source) => {
@@ -685,15 +719,26 @@ export function DiscordViewerTab() {
       if (result.indexing && result.retry_after) setSearchError(`Discord индексирует сообщения. Повторите поиск через ${Math.ceil(result.retry_after)} с.`)
     } catch (e) { setSearchError((e as ApiError).message); setSearchResults(null) }
   }
-  const channelButton = (item: TreeChannel, nested = false) => <div key={item.id} className="group">
-    <button type="button" onClick={() => selectChannel(item)} onContextMenu={(event) => { event.preventDefault(); setChannelMenu({ id: item.id, x: event.clientX, y: event.clientY }) }} onDragOver={(event) => item.type === "voice" || item.type === "stage" ? event.preventDefault() : undefined} onDrop={(event) => { event.preventDefault(); const memberId = event.dataTransfer.getData("text/plain") || draggingMember; if (memberId && (item.type === "voice" || item.type === "stage")) void moveMember(memberId, item.id) }} className={`flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-sm ${nested ? "pl-6" : ""} ${item.id === activeChannel ? "bg-[#404249] text-white" : "text-[#949ba4] hover:bg-[#35373c]"}`}>
-      {item.type === "thread" ? <GitBranch className="size-3.5 shrink-0" /> : item.type === "voice" || item.type === "stage" ? <Volume2 className="size-3.5 shrink-0" /> : item.type === "forum" || item.type === "media" ? <Users className="size-3.5 shrink-0" /> : <Hash className="size-3.5 shrink-0" />}
-      <span className="min-w-0 flex-1 truncate">{item.name}{item.archived && <span className="ml-1 text-[9px]">архив</span>}</span>
-      <span className="hidden group-hover:inline" title="Контекстные действия"><MoreHorizontal className="size-3.5" /></span>
-    </button>
-    <button type="button" aria-label={`Действия канала ${item.name}`} onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); setChannelMenu({ id: item.id, x: rect.right, y: rect.top }) }} className="sr-only focus:not-sr-only focus:rounded focus:bg-[#404249] focus:px-2 focus:text-xs">Меню канала</button>
+  const channelButton = (item: TreeChannel, nested = false): ReactElement => {
+    const actions = channelActions(item)
+    return <div key={item.id} className="group">
+      <div className="flex items-center">
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <button type="button" onClick={() => selectChannel(item)} onDragOver={(event) => item.type === "voice" || item.type === "stage" ? event.preventDefault() : undefined} onDrop={(event) => { event.preventDefault(); const memberId = event.dataTransfer.getData("text/plain") || draggingMember; if (memberId && (item.type === "voice" || item.type === "stage")) void moveMember(memberId, item.id) }} className={`flex min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 py-1 text-left text-sm ${nested ? "pl-6" : ""} ${item.id === activeChannel ? "bg-[#404249] text-white" : "text-[#949ba4] hover:bg-[#35373c]"}`}>
+            {item.type === "thread" ? <GitBranch className="size-3.5 shrink-0" /> : item.type === "voice" || item.type === "stage" ? <Volume2 className="size-3.5 shrink-0" /> : item.type === "forum" || item.type === "media" ? <Users className="size-3.5 shrink-0" /> : <Hash className="size-3.5 shrink-0" />}
+            <span className="min-w-0 flex-1 truncate">{item.name}{item.archived && <span className="ml-1 text-[9px]">архив</span>}</span>
+          </button>
+        </ContextMenuTrigger>
+        <ContextMenuContent collisionPadding={8} className="min-w-52 border-[#3b3d43] bg-[#111214] text-[#dbdee1]"><ChannelMenuItems actions={actions} context /></ContextMenuContent>
+      </ContextMenu>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild><button type="button" aria-label={`Действия канала ${item.name}`} className="flex size-6 shrink-0 items-center justify-center rounded text-[#949ba4] opacity-0 hover:bg-[#404249] group-hover:opacity-100 focus:opacity-100"><MoreHorizontal className="size-3.5" /></button></DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="min-w-52 border-[#3b3d43] bg-[#111214] text-[#dbdee1]"><ChannelMenuItems actions={actions} context={false} /></DropdownMenuContent>
+      </DropdownMenu>
+      </div>
     {(item.type === "voice" || item.type === "stage") && item.voice_members?.map((member) => <button key={member.id} type="button" draggable onDragStart={(event) => { event.dataTransfer.setData("text/plain", member.id); setDraggingMember(member.id) }} onDragEnd={() => setDraggingMember(null)} onClick={() => setSelectedMember(member.id)} className="ml-7 flex w-[calc(100%-1.75rem)] items-center gap-1.5 rounded px-1 py-1 text-left text-xs text-[#949ba4] hover:bg-[#35373c]">
-      <Avatar className="size-5"><AvatarImage src={member.avatar_url ?? undefined} /><AvatarFallback className="text-[8px]">{initials(member.display_name)}</AvatarFallback></Avatar><span className="min-w-0 flex-1 truncate">{member.display_name}</span>{member.streaming && <Radio className="size-3 text-[#23a55a]" />}{member.self_mute || member.mute ? <span title="Микрофон выключен">мьют</span> : null}
+      <Avatar className="size-5"><AvatarImage src={member.avatar_url ?? undefined} loading="lazy" /><AvatarFallback className="text-[8px]">{initials(member.display_name)}</AvatarFallback></Avatar><span className="min-w-0 flex-1 truncate">{member.display_name}</span>{member.streaming && <Radio className="size-3 text-[#23a55a]" />}{member.self_mute || member.mute ? <span title="Микрофон выключен">мьют</span> : null}
     </button>)}
     {threadsByParent.get(item.id)?.map((thread) => channelButton(thread, true))}
     {!nested && (item.type === "text" || item.type === "forum" || item.type === "media") && (() => {
@@ -704,7 +749,8 @@ export function DiscordViewerTab() {
       const loaded = states.some((state) => state?.loaded)
       return <button type="button" disabled={loading || !canLoad} onClick={() => void loadArchivedThreads(item)} className="ml-7 rounded px-1 py-0.5 text-left text-[10px] text-[#949ba4] hover:bg-[#35373c] disabled:opacity-50">{loading ? "Загрузка архивных веток…" : canLoad ? (loaded ? "Загрузить ещё архивные ветки" : "Показать архивные ветки") : "Архивные ветки загружены"}</button>
     })()}
-  </div>
+    </div>
+  }
 
   return <div data-discord-viewer className="discord-client flex h-[calc(100dvh-44px)] min-h-[420px] flex-col overflow-hidden">
     <div className="grid min-h-0 flex-1 grid-cols-[232px_minmax(0,1fr)_250px] overflow-hidden bg-[#313338] text-[#dbdee1] max-[900px]:grid-cols-[180px_minmax(0,1fr)] max-[900px]:[&>aside]:hidden">
@@ -727,25 +773,6 @@ export function DiscordViewerTab() {
     {channel && (channel.type === "voice" || channel.type === "stage") && <VoiceEventsBridge channelId={channel.id} />}
     {selectedMember && <MemberDetailDialog discordId={selectedMember} roles={rolesData?.roles ?? []} voiceTargets={tree.channels.filter((item) => item.type === "voice" || item.type === "stage")} onVoiceMove={moveMember} onClose={() => setSelectedMember(null)} />}
     {memberAccess && <ChannelAccessDialog channelId={memberAccess} onClose={() => setMemberAccess(null)} />}
-    {channelMenu && <div ref={channelMenuRef} role="menu" tabIndex={-1} className="fixed z-50 min-w-48 rounded-md border border-[#3b3d43] bg-[#111214] p-1 shadow-xl" style={{ left: channelMenu.x, top: channelMenu.y }} onMouseLeave={() => setChannelMenu(null)} onKeyDown={(event) => { if (event.key === "Escape") setChannelMenu(null) }}>
-      <button role="menuitem" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-[#dbdee1] hover:bg-[#35373c]" onClick={() => { void navigator.clipboard.writeText(channelMenu.id); setChannelMenu(null) }}><Copy className="size-3.5" />Копировать ID канала</button>
-      <button role="menuitem" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-[#dbdee1] hover:bg-[#35373c]" onClick={() => { void navigator.clipboard.writeText(`https://discord.com/channels/${tree.guild.id}/${channelMenu.id}`); setChannelMenu(null) }}><Link2 className="size-3.5" />Копировать ссылку Discord</button>
-      <a role="menuitem" className="flex items-center gap-2 rounded px-2 py-1.5 text-xs text-[#dbdee1] hover:bg-[#35373c]" href={`/api/v1/admin/discord-bot/viewer/channels/${channelMenu.id}/export`} download><Download className="size-3.5" />Экспорт истории</a>
-      {tree.can_manage_roles && <button role="menuitem" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-[#dbdee1] hover:bg-[#35373c]" onClick={async () => { try { const invite = await api.post<{ url: string }>(`/api/v1/admin/discord-bot/viewer/channels/${channelMenu.id}/invite`); await navigator.clipboard.writeText(invite.url); toast.success("Приглашение скопировано") } catch (e) { toast.error((e as ApiError).message) } setChannelMenu(null) }}><Link2 className="size-3.5" />Создать приглашение</button>}
-      {tree.can_manage_roles && <button role="menuitem" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-[#dbdee1] hover:bg-[#35373c]" onClick={() => { setMemberAccess(channelMenu.id); setChannelMenu(null) }}><Users className="size-3.5" />Доступ участников</button>}
-      {tree.can_manage_roles && <button role="menuitem" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-[#ed4245] hover:bg-[#35373c]" onClick={async () => {
-        const item = tree.channels.find((c) => c.id === channelMenu.id)
-        if (item && window.confirm(`Удалить канал #${item.name}? Это действие нельзя отменить.`)) {
-          if (window.prompt(`Для подтверждения введите имя канала: ${item.name}`) !== item.name) {
-            toast.error("Имя канала не совпало; удаление отменено")
-          } else {
-            try { await api.delete(`/api/v1/admin/discord-bot/viewer/channels/${item.id}`, { reason: `Удаление ${item.name} из Discord-вьюера` }); toast.success("Канал удалён"); setActiveChannel(null); await queryClient.invalidateQueries({ queryKey: ["discord-viewer-tree"] }) }
-            catch (e) { toast.error((e as ApiError).message) }
-          }
-        }
-        setChannelMenu(null)
-      }}><Trash2 className="size-3.5" />Удалить канал…</button>}
-    </div>}
   </div>
 }
 
