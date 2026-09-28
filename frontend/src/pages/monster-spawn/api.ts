@@ -477,6 +477,8 @@ export const monsterSpawnApi = {
   get: (server: string) => api.get<MonsterSpawnState>(`/api/v1/admin/monster-spawn?server=${encodeURIComponent(server)}`).then(normalizeMonsterSpawnState),
   update: (server: string, body: Partial<Pick<MonsterSpawnState, "config" | "memory" | "plans">>) =>
     api.put<MonsterSpawnState>(`/api/v1/admin/monster-spawn?server=${encodeURIComponent(server)}`, body).then(normalizeMonsterSpawnState),
+  resetAdaptations: (server: string) =>
+    api.post<MonsterSpawnState>(`/api/v1/admin/monster-spawn/reset-adaptations?server=${encodeURIComponent(server)}`, {}).then(normalizeMonsterSpawnState),
   analysis: (server: string) => api.get<MonsterSpawnAnalysis>(`/api/v1/admin/monster-spawn/analysis?server=${encodeURIComponent(server)}`),
   reports: (server: string) => api.get<{ server: string; reports: RoundReport[] }>(`/api/v1/admin/monster-spawn/reports?server=${encodeURIComponent(server)}`),
   retryRoundAnalysis: (server: string, reportId: number) =>
@@ -492,6 +494,6 @@ export const monsterSpawnApi = {
     api.post<{ status: string; run: LLMRun }>(`/api/v1/admin/monster-spawn/llm/run?server=${encodeURIComponent(server)}`, body),
   cancelLLMRun: (server: string, runId: string) =>
     api.post<{ status: string }>(`/api/v1/admin/monster-spawn/llm/runs/${encodeURIComponent(runId)}/cancel?server=${encodeURIComponent(server)}`, {}),
-  applyProposal: (server: string, runId: string) =>
-    api.post<{ status: string; revision: number }>(`/api/v1/admin/monster-spawn/llm/apply-proposal?server=${encodeURIComponent(server)}`, { run_id: runId }),
+  applyProposal: (server: string, runId: string, changeIndices?: number[]) =>
+    api.post<{ status: string; revision: number }>(`/api/v1/admin/monster-spawn/llm/apply-proposal?server=${encodeURIComponent(server)}`, { run_id: runId, change_indices: changeIndices }),
 }

@@ -599,6 +599,8 @@ async def api_sub_project_update(
     project = svc.update(project_id, data)
     if image and image.filename:
         svc.save_image(project_id, image)
+    if project.discord_message_id:
+        svc.publish_to_discord(project_id, str(request.base_url))
 
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, "sub_project_update", {"project_id": project_id, "name": project.name})
@@ -1132,6 +1134,8 @@ async def sub_project_update(
 
     if image and image.filename:
         svc.save_image(project_id, image)
+    if project.discord_message_id:
+        svc.publish_to_discord(project_id, str(request.base_url))
 
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, "sub_project_update", {"project_id": project_id, "name": project.name})

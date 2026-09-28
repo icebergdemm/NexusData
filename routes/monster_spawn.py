@@ -481,6 +481,29 @@ def admin_update(
     return _serialize(row)
 
 
+@admin_router.post("/reset-adaptations")
+def admin_reset_adaptations(
+    server: str = Query(...),
+    admin: AdminUser = Depends(_current_admin),
+    db: Session = Depends(get_game_db),
+):
+    """Clear adaptive history and round reports while preserving config and plans."""
+    _require(admin, "manage_memory")
+    row = _get_or_create(db, _normalize_server(server))
+    memory = dict(row.memory) if isinstance(row.memory, dict) else {}
+    for key in ("waves", "submarines", "global_performance_ema"):
+        memory.pop(key, None)
+    row.memory = memory
+    row.round_reports = "[]"
+    db.query(MonsterSpawnRoundReport).filter_by(server=row.server).delete(synchronize_session=False)
+    row.desired_revision = (row.desired_revision or 0) + 1
+    row.updated_by_admin_id = admin.id
+    row.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(row)
+    return _serialize(row)
+
+
 @admin_router.get("/analysis")
 def admin_analysis(
     server: str = Query(...),
@@ -590,6 +613,7 @@ class LLMRunRequest(BaseModel):
 
 class LLMApplyProposal(BaseModel):
     run_id: str
+    change_indices: Optional[List[int]] = None
 
 
 def _get_main_db() -> Session:
@@ -738,6 +762,10 @@ def admin_llm_apply_proposal(
         changes = (run.result_json or {}).get("proposed_changes") if run else None
         if not isinstance(changes, list) or not changes:
             raise HTTPException(status_code=404, detail="Предложение не найдено")
+        changes = [change for index, change in enumerate(changes)
+                   if payload.change_indices is None or index in payload.change_indices]
+        if not changes:
+            raise HTTPException(status_code=400, detail="Не выбраны изменения")
         row = _get_or_create(db, server_key)
         config = copy.deepcopy(row.config or {})
         current = config.get("global") or {}
