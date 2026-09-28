@@ -310,14 +310,19 @@ def dispatch_voice_profile_work(db) -> dict:
             or_(RoundReplay.voice_profile_state.in_(("pending", "awaiting_decoder")),
                 RoundReplay.voice_profile_state.is_(None)),
         ).order_by(RoundReplay.id).with_for_update(skip_locked=True).limit(50).all()
+        pending.sort(key=lambda replay: (
+            (replay.voice_profile_progress or {}).get("mode") != "speech_gate_queue",
+            replay.id,
+        ))
         for replay in pending:
-            if (replay.voice_profile_progress or {}).get("mode") == "speech_gate_queue":
-                continue
             if enqueued >= 10:
                 break
             dedupe = f"voice-profile:{replay.id}"
             existing = db.query(ExternalWorkerJob).filter(ExternalWorkerJob.dedupe_key == dedupe).first()
-            if existing and existing.status not in {"failed", "cancelled"}:
+            is_speech_gate_retry = (replay.voice_profile_progress or {}).get("mode") == "speech_gate_queue"
+            if (existing and existing.status not in {"failed", "cancelled"}
+                    and not (is_speech_gate_retry and existing.status == "completed"
+                             and (existing.result or {}).get("applied"))):
                 continue
             if existing:
                 if existing.result_artifact_path:
@@ -378,11 +383,14 @@ def dispatch_voice_profile_work(db) -> dict:
     gate_replay = next((row for row in gate_rows
                         if (row.voice_profile_progress or {}).get("mode") == "speech_gate_queue"), None)
     if gate_replay is not None:
-        service = NwdemoVoiceProfileService(db)
-        if service.decoder_path:
-            result = _process_nwdemo_speech_gate_queue(db, gate_replay, service)
+        if capable_extract:
+            result = {"status": "waiting_for_external_worker", "replay_id": gate_replay.id}
         else:
-            result = {"status": "awaiting_decoder", "replay_id": gate_replay.id}
+            service = NwdemoVoiceProfileService(db)
+            if service.decoder_path:
+                result = _process_nwdemo_speech_gate_queue(db, gate_replay, service)
+            else:
+                result = {"status": "awaiting_decoder", "replay_id": gate_replay.id}
     elif not voiceprint_enabled:
         result = {"status": "voiceprint_paused"}
     else:
