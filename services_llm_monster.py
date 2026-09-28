@@ -308,10 +308,17 @@ known_species. count не больше 6, hp_multiplier в пределах 0.5-
 6. Ничего кроме JSON. Никакого markdown, никаких комментариев."""
 
 ROUND_PROMPT = """Проанализируй завершённый раунд Barotrauma по переданному отчёту.
+Вход сжат: round = [время начала UTC, длительность в минутах, режим, подлодка]; summary =
+[всего волн, сценарных волн, idle-орды, незавершённые, потери экипажа, потеря прочности,
+средняя эффективность, итоговая эффективность]. outcomes и types содержат итоги по всем волнам.
+waves — максимум 24 равномерно выбранные записи в порядке раунда, каждая в формате
+[название, причина, исход, судьба, бой сек., отступление сек., потери, урон подлодке,
+эффективность, сложность, прогресс, [[вид монстра, количество]]].
+Опирайся на общие итоги и выборку, не делай вид, что выборка содержит все волны.
 Укажи характер волн, причины появления, время устранения, исходы, потери и динамику экипажа.
-Если controller_mode=learning, плагин лишь наблюдал ванильный спавн: не приписывай ему изменения сложности или размещения.
-Не выдумывай отсутствующие данные. Верни только JSON по схеме:
-{"conclusion":"содержательное заключение по-русски"}."""
+Если mode (round[2])=learning, плагин лишь наблюдал ванильный спавн: не приписывай ему изменения сложности или размещения.
+Не выдумывай отсутствующие данные. Заключение — до 1800 символов. Верни только JSON по схеме:
+{"conclusion":"содержательное заключение по-русски"}, без markdown и текста снаружи."""
 
 REPORT_PROMPT = """Оцени последние не более 15 завершённых раундов Barotrauma.
 Сопоставь частоту и причины волн, длительность боёв, потери, обходы и тенденцию сложности.
@@ -1491,20 +1498,84 @@ def process_pending_llm_runs() -> List[Dict[str, Any]]:
     return results
 
 
-def _round_brief(report: dict, limit: int = 80) -> dict:
-    """Bound LLM input while retaining encounter evidence."""
-    brief = {key: report.get(key) for key in (
-        "round_start_utc", "round_end_utc", "round_duration_seconds", "controller_mode",
-        "submarine_name", "summary") if key in report}
-    waves = report.get("waves") if isinstance(report.get("waves"), list) else []
-    brief["total_waves"] = len(waves)
-    brief["waves"] = [{key: value for key, value in wave.items() if key in (
-        "wave_name", "name", "spawn_reason", "reason", "outcome", "fate",
-        "repel_seconds", "expected_repel_seconds", "engagement_seconds",
-        "crew_deaths", "sub_health_loss", "performance", "monster_counts",
-        "effective_difficulty", "resolved_at_seconds")}
-        for wave in waves[:limit] if isinstance(wave, dict)]
-    return brief
+def _round_brief(report: dict, sample_limit: int = 24) -> dict:
+    """Create a compact, whole-round digest plus an evenly spaced wave sample."""
+    def number(value, digits: int = 1):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return round(value, digits) if isinstance(value, float) else value
+
+    def short_text(value, limit: int):
+        return str(value).replace("\r", " ").replace("\n", " ")[:limit] if value is not None else ""
+
+    source_waves = report.get("waves") if isinstance(report.get("waves"), list) else []
+    waves = [wave for wave in source_waves if isinstance(wave, dict)]
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+
+    outcomes: Dict[str, int] = {}
+    wave_types: Dict[str, int] = {}
+    for wave in waves:
+        outcome = short_text(wave.get("outcome") or wave.get("fate") or "unknown", 32)
+        name = short_text(wave.get("wave_name") or wave.get("name") or "unknown", 72)
+        outcomes[outcome] = outcomes.get(outcome, 0) + 1
+        wave_types[name] = wave_types.get(name, 0) + 1
+
+    if len(waves) <= sample_limit:
+        sampled = waves
+    elif sample_limit <= 1:
+        sampled = [waves[-1]]
+    else:
+        indices = {round(index * (len(waves) - 1) / (sample_limit - 1))
+                   for index in range(sample_limit)}
+        sampled = [waves[index] for index in sorted(indices)]
+
+    wave_rows = []
+    for wave in sampled:
+        raw_counts = wave.get("monster_counts")
+        counts = []
+        if isinstance(raw_counts, dict):
+            counts = [[short_text(species, 48), count]
+                      for species, count in sorted(
+                          raw_counts.items(), key=lambda item: number(item[1], 0) or 0, reverse=True)[:4]
+                      if isinstance(count, int) and not isinstance(count, bool)]
+        wave_rows.append([
+            short_text(wave.get("wave_name") or wave.get("name"), 72),
+            short_text(wave.get("spawn_reason") or wave.get("reason"), 64),
+            short_text(wave.get("outcome"), 24),
+            short_text(wave.get("fate"), 24),
+            number(wave.get("engagement_seconds")),
+            number(wave.get("repel_seconds")),
+            number(wave.get("crew_deaths"), 0),
+            number(wave.get("sub_health_loss")),
+            number(wave.get("performance"), 2),
+            number(wave.get("effective_difficulty"), 1),
+            number(wave.get("progress_at_spawn"), 3),
+            counts,
+        ])
+
+    duration_seconds = number(report.get("round_duration_seconds"), 0)
+    return {
+        "round": [
+            report.get("round_start_utc"),
+            round(duration_seconds / 60) if duration_seconds is not None else None,
+            short_text(report.get("controller_mode"), 24),
+            short_text(report.get("submarine_name"), 72),
+        ],
+        "summary": [
+            number(summary.get("total_waves_spawned"), 0),
+            number(summary.get("scenario_waves_spawned"), 0),
+            number(summary.get("idle_hordes_spawned"), 0),
+            number(summary.get("unresolved_waves"), 0),
+            number(summary.get("total_crew_deaths"), 0),
+            number(summary.get("total_sub_health_loss")),
+            number(summary.get("average_performance"), 2),
+            number(summary.get("final_global_performance_ema"), 2),
+        ],
+        "wave_count": len(waves),
+        "outcomes": outcomes,
+        "types": sorted(wave_types.items(), key=lambda item: (-item[1], item[0]))[:8],
+        "waves": wave_rows,
+    }
 
 
 def process_pending_round_reports() -> List[Dict[str, Any]]:
@@ -1564,9 +1635,12 @@ def process_pending_round_reports() -> List[Dict[str, Any]]:
             if pending is not None:
                 try:
                     settings = get_settings()
+                    round_brief = json.dumps(
+                        _round_brief(pending.report_json or {}),
+                        ensure_ascii=False, separators=(",", ":"))
                     content = _chat_completions(
                         [{"role": "system", "content": ROUND_PROMPT},
-                         {"role": "user", "content": json.dumps(_round_brief(pending.report_json or {}), ensure_ascii=False)}],
+                         {"role": "user", "content": round_brief}],
                         settings.monster_llm_model, max(settings.monster_llm_timeout_seconds, 600.0),
                         settings.monster_llm_temperature, settings.monster_llm_top_p,
                         max_tokens=2048)
