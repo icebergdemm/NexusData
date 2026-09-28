@@ -1007,7 +1007,7 @@ def get_llm_deployment_info() -> Dict[str, Any]:
 # Async manual runs: POST /llm/run only queues (HTTP 202), a scheduler worker
 # executes, the UI polls runtime. A synchronous cycle (queue wait on the
 # shared aggregator lock + up to two model timeouts) easily outlives the
-# 180 s proxy read timeout, which is exactly the stuck "Модель думает…" +
+# 300 s proxy read timeout, which is exactly the stuck "Модель думает…" +
 # HTTP 504 operators saw. Never block an HTTP request on a generation.
 # ---------------------------------------------------------------------------
 

@@ -143,7 +143,7 @@ async def lifespan(_app):
     # Разделяем: подключение к бэкенду остаётся коротким, чтобы реально
     # упавший процесс определялся мгновенно, а чтение ответа — длинным.
     _http_client = httpx.AsyncClient(
-        timeout=httpx.Timeout(connect=5.0, read=180.0, write=180.0, pool=10.0)
+        timeout=httpx.Timeout(connect=5.0, read=300.0, write=300.0, pool=10.0)
     )
     try:
         yield

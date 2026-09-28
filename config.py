@@ -159,7 +159,7 @@ class Settings(BaseSettings):
     ai_dossier_url: str = Field("")
     ai_dossier_api_key: str = Field("")
     ai_dossier_tls_ca_file: str = Field("")
-    ai_dossier_timeout_seconds: float = Field(180.0, gt=0, le=600)
+    ai_dossier_timeout_seconds: float = Field(240.0, gt=0, le=600)
     ai_dossier_model: str = Field("qwen3-14b-iq3_m", min_length=1, max_length=255)
     ai_dossier_active_days: int = Field(30, ge=1, le=365)
     ai_dossier_daily_limit: int = Field(10, ge=1, le=10)
@@ -196,7 +196,7 @@ class Settings(BaseSettings):
     # AppSetting key "monster_spawn_llm_config_v1" and is editable from the
     # admin UI; these fields are just the deployment defaults.
     monster_llm_model: str = Field("qwen3-4b-instruct")
-    monster_llm_timeout_seconds: float = Field(90.0, gt=0, le=300)
+    monster_llm_timeout_seconds: float = Field(240.0, gt=0, le=300)
     # Anti-hallucination defaults: low temperature, small top_p and a hard
     # JSON-schema validation on every response (see services_llm_monster.py).
     monster_llm_temperature: float = Field(0.15, ge=0.0, le=2.0)

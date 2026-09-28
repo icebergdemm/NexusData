@@ -18,15 +18,15 @@ logger = logging.getLogger(__name__)
 
 LLM_CLIENTS = {
     "dossier": {"backend": "dossier", "priority": 100, "quota_min": 2,
-                "timeout": 180.0, "max_tokens": 260, "max_queue_depth": 20},
+                "timeout": 240.0, "max_tokens": 260, "max_queue_depth": 20},
     "dispatcher": {"backend": "dispatcher", "priority": 10, "quota_min": 12,
                     "timeout": 60.0, "max_tokens": 512, "max_queue_depth": 50},
     "future": {"backend": "dossier", "priority": 200, "quota_min": 1,
-                "timeout": 180.0, "max_tokens": 260, "max_queue_depth": 5},
+                "timeout": 240.0, "max_tokens": 260, "max_queue_depth": 5},
     "log_analysis_dry_run": {"backend": "dossier", "priority": 150, "quota_min": 12,
                               "timeout": 240.0, "max_tokens": 2048, "max_queue_depth": 20},
     "monster_llm": {"backend": "dossier", "priority": 120, "quota_min": 12,
-                    "timeout": 180.0, "max_tokens": 4096, "max_queue_depth": 50},
+                    "timeout": 240.0, "max_tokens": 4096, "max_queue_depth": 50},
 }
 BACKENDS = {
     "dossier": {"url_key": "ai_dossier_url", "key": "ai_dossier_api_key",
