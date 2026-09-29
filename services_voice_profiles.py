@@ -1504,6 +1504,45 @@ class VoiceProfileService:
         self.root = Path(get_upload_dir(db)) / "voice_profiles"
         self.root.mkdir(parents=True, exist_ok=True)
 
+    def _update_signature(self, steam_id: str, source_channel: str, algorithm: str) -> None:
+        from models import VoiceProfileSignature, VoiceReplayFingerprint
+
+        fingerprints = self.db.query(VoiceReplayFingerprint).filter(
+            VoiceReplayFingerprint.steam_id == steam_id,
+            VoiceReplayFingerprint.algorithm == algorithm,
+            VoiceReplayFingerprint.source_channel == source_channel,
+            VoiceReplayFingerprint.quality == "good",
+        ).all()
+        signature = self.db.query(VoiceProfileSignature).filter(
+            VoiceProfileSignature.steam_id == steam_id,
+            VoiceProfileSignature.algorithm == algorithm,
+            VoiceProfileSignature.source_channel == source_channel,
+        ).first()
+        aggregate = aggregate_mfcc_v1({
+            "vector": row.vector,
+            "quality": row.quality,
+            "duration_ms": row.duration_ms,
+        } for row in fingerprints)
+        if aggregate is None:
+            if signature is not None:
+                self.db.delete(signature)
+            return
+        vector, sample_count, weighted_duration = aggregate
+        if signature is None:
+            signature = VoiceProfileSignature(
+                steam_id=steam_id,
+                algorithm=algorithm,
+                source_channel=source_channel,
+                vector=vector,
+                sample_count=sample_count,
+                weighted_duration_ms=weighted_duration,
+            )
+            self.db.add(signature)
+        else:
+            signature.vector = vector
+            signature.sample_count = sample_count
+            signature.weighted_duration_ms = weighted_duration
+
     def _player_candidates(self, names: Iterable[str]) -> list[dict]:
         from services import PlayerService
 
@@ -2431,45 +2470,6 @@ class NwdemoVoiceProfileService(VoiceProfileService):
         write_vpk1(vpk_path, read_ndvc(ndvc_path))
         decode_vpk1(self.decoder_path, vpk_path, wav_path, index_path)
         return wav_path
-
-    def _update_signature(self, steam_id: str, source_channel: str, algorithm: str) -> None:
-        from models import VoiceProfileSignature, VoiceReplayFingerprint
-
-        fingerprints = self.db.query(VoiceReplayFingerprint).filter(
-            VoiceReplayFingerprint.steam_id == steam_id,
-            VoiceReplayFingerprint.algorithm == algorithm,
-            VoiceReplayFingerprint.source_channel == source_channel,
-            VoiceReplayFingerprint.quality == "good",
-        ).all()
-        signature = self.db.query(VoiceProfileSignature).filter(
-            VoiceProfileSignature.steam_id == steam_id,
-            VoiceProfileSignature.algorithm == algorithm,
-            VoiceProfileSignature.source_channel == source_channel,
-        ).first()
-        aggregate = aggregate_mfcc_v1({
-            "vector": row.vector,
-            "quality": row.quality,
-            "duration_ms": row.duration_ms,
-        } for row in fingerprints)
-        if aggregate is None:
-            if signature is not None:
-                self.db.delete(signature)
-            return
-        vector, sample_count, weighted_duration = aggregate
-        if signature is None:
-            signature = VoiceProfileSignature(
-                steam_id=steam_id,
-                algorithm=algorithm,
-                source_channel=source_channel,
-                vector=vector,
-                sample_count=sample_count,
-                weighted_duration_ms=weighted_duration,
-            )
-            self.db.add(signature)
-        else:
-            signature.vector = vector
-            signature.sample_count = sample_count
-            signature.weighted_duration_ms = weighted_duration
 
     def _update_fingerprint(self, replay, steam_id: str, packets: Sequence[NwdemoVoicePacket], temporary: Path) -> None:
         from models import VoiceReplayFingerprint

@@ -265,6 +265,36 @@ def dispatch_voice_profile_work(db) -> dict:
     capable_extract = any("voice_profile.extract" in (node.capabilities or []) for node in online)
     capable_voiceprint = any("voice_profile.voiceprint" in (node.capabilities or []) for node in online)
 
+    retryable_jobs = db.query(ExternalWorkerJob).filter(
+        ExternalWorkerJob.task_type.in_(("voice_profile.extract", "voice_profile.voiceprint")),
+        ExternalWorkerJob.status == "failed",
+        ExternalWorkerJob.attempts < ExternalWorkerJob.max_attempts,
+    ).order_by(ExternalWorkerJob.id).with_for_update(skip_locked=True).all()
+    retried = 0
+    for job in retryable_jobs:
+        if job.result_artifact_path:
+            Path(job.result_artifact_path).unlink(missing_ok=True)
+        job.status = "queued"
+        job.result = None
+        job.result_artifact_path = None
+        job.finished_at = None
+        job.worker_id = None
+        job.lease_until = None
+        replay_id = int((job.payload or {}).get("replay_id") or 0)
+        replay = db.query(RoundReplay).filter(RoundReplay.id == replay_id).first() if replay_id else None
+        if replay is not None:
+            replay.voice_profile_state = "processing" if job.task_type == "voice_profile.extract" else "ready"
+            replay.voice_profile_started_at = datetime.utcnow()
+            replay.voice_profile_heartbeat_at = datetime.utcnow()
+            replay.voice_profile_progress = {
+                "mode": "external_worker",
+                "phase": "queued" if job.task_type == "voice_profile.extract" else "voiceprint",
+            }
+            replay.voice_profile_error = None
+        retried += 1
+    if retried:
+        db.commit()
+
     completed_ids = [row[0] for row in db.query(ExternalWorkerJob.id).filter(
         ExternalWorkerJob.task_type.in_(("voice_profile.extract", "voice_profile.voiceprint")),
         ExternalWorkerJob.status == "completed",
@@ -410,5 +440,5 @@ def dispatch_voice_profile_work(db) -> dict:
             result = {"status": "waiting_for_external_worker"}
         else:
             result = {"status": "idle"}
-    return {**recovery, "imported": imported, "enqueued": enqueued,
+    return {**recovery, "imported": imported, "retried": retried, "enqueued": enqueued,
             "voiceprints_queued": voiceprints_queued, **result}
