@@ -22,6 +22,7 @@ from database import SessionLocal
 
 _TICKET_IPC_ACTION_TYPES = frozenset({"ticket_send_message", "ticket_close_channel"})
 _TICKET_IPC_MARKER = "nexus-ticket-ipc-v1"
+MUTE_TIMEOUT_MESSAGE_THRESHOLD = 5
 _mute_store_lock = threading.Lock()
 
 
@@ -509,7 +510,7 @@ def record_muted_message_attempt(discord_id: str) -> tuple[int, bool, dict | Non
         value["message_attempts"] = count
         mutes[key] = value
         set_json_bot_config("discord_mutes", mutes)
-        return count, count == 15, dict(value)
+        return count, count == MUTE_TIMEOUT_MESSAGE_THRESHOLD, dict(value)
 
 
 def mark_mute_spam_timeout(discord_id: str, timeout_until: datetime) -> None:

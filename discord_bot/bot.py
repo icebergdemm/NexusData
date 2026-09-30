@@ -3103,7 +3103,10 @@ async def _ensure_mute_spam_timeout(member: discord.Member, mute_info: dict) -> 
         now = datetime.now(timezone.utc)
         timeout_until = min(max(mute_expires + timedelta(hours=1), now + timedelta(hours=1)),
                             now + timedelta(days=28))
-        await member.timeout(timeout_until, reason="15 сообщений отправлено во время мута")
+        await member.timeout(
+            timeout_until,
+            reason=f"{bot_data.MUTE_TIMEOUT_MESSAGE_THRESHOLD} сообщений отправлено во время мута",
+        )
         await asyncio.to_thread(bot_data.mark_mute_spam_timeout, str(member.id), timeout_until)
         return timeout_until
     except Exception as exc:
@@ -3126,7 +3129,10 @@ async def _notify_mute_spam_trigger(member: discord.Member, message_count: int, 
             return
     embed = discord.Embed(
         title="⏱ Тайм-аут за попытки писать во время мута",
-        description=f"{member.mention} отправил(а) 15 сообщений во время мута.",
+        description=(
+            f"{member.mention} отправил(а) {bot_data.MUTE_TIMEOUT_MESSAGE_THRESHOLD} "
+            "сообщений во время мута."
+        ),
         color=0xe67e22,
     )
     embed.add_field(name="Участник", value=f"{member} (`{member.id}`)", inline=False)
@@ -5434,7 +5440,11 @@ async def on_message(message: discord.Message):
                 mute_info = recorded_mute
             if reached_threshold:
                 await _notify_mute_spam_trigger(message.author, attempt_count, mute_info)
-            if recorded_mute is not None and attempt_count >= 15 and not recorded_mute.get("spam_timeout_until"):
+            if (
+                recorded_mute is not None
+                and attempt_count >= bot_data.MUTE_TIMEOUT_MESSAGE_THRESHOLD
+                and not recorded_mute.get("spam_timeout_until")
+            ):
                 await _ensure_mute_spam_timeout(message.author, recorded_mute)
         except Exception:
             logger.exception("Failed to process muted-message threshold for %s", message.author.id)
