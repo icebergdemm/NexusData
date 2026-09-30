@@ -131,7 +131,7 @@ def department_sources_for_admin(db, admin_id: int) -> list[dict]:
     memberships = (
         db.query(DepartmentMember)
         .options(joinedload(DepartmentMember.department))
-        .filter(DepartmentMember.admin_id == admin_id)
+        .filter(DepartmentMember.admin_id == admin_id, DepartmentMember.is_excluded.is_(False))
         .all()
     )
     if not memberships:
@@ -268,7 +268,7 @@ def build_authorization_trace(db, admin_id: int) -> dict:
     memberships = (
         db.query(DepartmentMember)
         .options(joinedload(DepartmentMember.department))
-        .filter(DepartmentMember.admin_id == admin.id)
+        .filter(DepartmentMember.admin_id == admin.id, DepartmentMember.is_excluded.is_(False))
         .all()
     )
     levels = db.query(DepartmentAccessLevel).filter(DepartmentAccessLevel.department_id.in_([m.department_id for m in memberships])).all() if memberships else []
@@ -437,7 +437,7 @@ def permission_summaries(db, admins: Sequence[AdminUser]) -> dict[int, dict]:
     memberships = (
         db.query(DepartmentMember)
         .options(joinedload(DepartmentMember.department))
-        .filter(DepartmentMember.admin_id.in_(admin_ids))
+        .filter(DepartmentMember.admin_id.in_(admin_ids), DepartmentMember.is_excluded.is_(False))
         .all()
     )
     dept_ids = {member.department_id for member in memberships}

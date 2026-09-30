@@ -48,6 +48,7 @@ from services_ticket_media import (
 settings = get_settings()
 
 GUILD_ID = int(settings.discord_guild_id or 0)
+DEFAULT_MUTE_SPAM_CHANNEL_ID = 1549762578048360518
 
 logger = logging.getLogger("NexusBot")
 
@@ -1490,18 +1491,28 @@ async def ticket_bot_action_task():
 
 @tasks.loop(minutes=5)
 async def mute_voice_cleanup_task():
-    """Авто-снятие голосовых ограничений после истечения мута (п.7)."""
+    """Clear expired mute restrictions and renew long spam-triggered timeouts."""
     try:
         raw = await asyncio.to_thread(bot_data.get_stored_mutes)
         now = datetime.utcnow()
         expired = []
+        renew = []
         for did, val in list(raw.items()):
             try:
-                if datetime.fromisoformat(str(val.get("expires_at", ""))) <= now:
+                expires_at = datetime.fromisoformat(str(val.get("expires_at", "")))
+                if expires_at.tzinfo is not None:
+                    expires_at = expires_at.astimezone(timezone.utc).replace(tzinfo=None)
+                if expires_at <= now:
                     expired.append((did, str(val.get("expires_at", ""))))
+                elif val.get("spam_timeout_until"):
+                    timeout_until = datetime.fromisoformat(str(val["spam_timeout_until"]))
+                    if timeout_until.tzinfo is not None:
+                        timeout_until = timeout_until.astimezone(timezone.utc).replace(tzinfo=None)
+                    if timeout_until <= now + timedelta(hours=1):
+                        renew.append((did, val))
             except Exception:
                 logger.warning("mute_voice_cleanup ignored malformed record for %s", did)
-        if not expired:
+        if not expired and not renew:
             return
         guild = bot.get_guild(GUILD_ID)
         if not guild:
@@ -1514,7 +1525,10 @@ async def mute_voice_cleanup_task():
                         member = await guild.fetch_member(int(did))
                     except Exception:
                         continue
-                restored = await _restore_voice_on_unmute(member, "авто-размут (истёк срок)")
+                mute = raw.get(did) if isinstance(raw.get(did), dict) else {}
+                restored = await _restore_voice_on_unmute(
+                    member, "авто-размут (истёк срок)", mute.get("spam_timeout_until")
+                )
                 if restored:
                     await asyncio.to_thread(
                         bot_data.remove_mute,
@@ -1523,6 +1537,12 @@ async def mute_voice_cleanup_task():
                     )
             except Exception as e:
                 logger.warning(f"mute_voice_cleanup failed for {did}: {e}")
+        for did, mute in renew:
+            try:
+                member = guild.get_member(int(did)) or await guild.fetch_member(int(did))
+                await _ensure_mute_spam_timeout(member, mute)
+            except Exception as e:
+                logger.warning("mute_voice_cleanup timeout renewal failed for %s: %s", did, e)
     except Exception as e:
         logger.warning(f"mute_voice_cleanup_task error: {e}")
 
@@ -3029,7 +3049,7 @@ async def _restrict_voice_on_mute(member: discord.Member, reason: str):
             logger.warning(f"Failed to set voice overwrite for {member} in {ch}: {e}")
 
 
-async def _restore_voice_on_unmute(member: discord.Member, reason: str):
+async def _restore_voice_on_unmute(member: discord.Member, reason: str, spam_timeout_until: str | None = None):
     guild = member.guild
     if not guild:
         return False
@@ -3039,6 +3059,14 @@ async def _restore_voice_on_unmute(member: discord.Member, reason: str):
     except Exception as e:
         logger.warning(f"Failed to server-unmute {member}: {e}")
         restored = False
+    if spam_timeout_until:
+        try:
+            actual_until = member.timed_out_until
+            if actual_until is not None:
+                await member.timeout(None, reason=f"Размут: {reason}"[:512] if reason else "Размут")
+        except Exception as e:
+            logger.warning("Failed to clear mute-triggered timeout for %s: %s", member, e)
+            restored = False
     for ch in getattr(guild, "channels", ()):
         if not isinstance(ch, VocalGuildChannel):
             continue
@@ -3062,6 +3090,52 @@ async def _restore_voice_on_unmute(member: discord.Member, reason: str):
             logger.warning(f"Failed to clear voice overwrite for {member} in {ch}: {e}")
             restored = False
     return restored
+
+
+async def _ensure_mute_spam_timeout(member: discord.Member, mute_info: dict) -> datetime | None:
+    """Apply/renew a timeout beyond the mute, respecting Discord's 28-day cap."""
+    try:
+        mute_expires = datetime.fromisoformat(str(mute_info.get("expires_at", "")))
+        if mute_expires.tzinfo is None:
+            mute_expires = mute_expires.replace(tzinfo=timezone.utc)
+        else:
+            mute_expires = mute_expires.astimezone(timezone.utc)
+        now = datetime.now(timezone.utc)
+        timeout_until = min(max(mute_expires + timedelta(hours=1), now + timedelta(hours=1)),
+                            now + timedelta(days=28))
+        await member.timeout(timeout_until, reason="15 сообщений отправлено во время мута")
+        await asyncio.to_thread(bot_data.mark_mute_spam_timeout, str(member.id), timeout_until)
+        return timeout_until
+    except Exception as exc:
+        logger.warning("Failed to apply mute-triggered timeout to %s: %s", member, exc)
+        return None
+
+
+async def _notify_mute_spam_trigger(member: discord.Member, message_count: int, mute_info: dict) -> None:
+    config = await asyncio.to_thread(bot_data.get_bot_config)
+    try:
+        channel_id = int(config.get("mute_spam_channel_id") or DEFAULT_MUTE_SPAM_CHANNEL_ID)
+    except (TypeError, ValueError):
+        channel_id = DEFAULT_MUTE_SPAM_CHANNEL_ID
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except Exception as exc:
+            logger.warning("Could not load mute-spam alert channel %s: %s", channel_id, exc)
+            return
+    embed = discord.Embed(
+        title="⏱ Тайм-аут за попытки писать во время мута",
+        description=f"{member.mention} отправил(а) 15 сообщений во время мута.",
+        color=0xe67e22,
+    )
+    embed.add_field(name="Участник", value=f"{member} (`{member.id}`)", inline=False)
+    embed.add_field(name="Попыток", value=str(message_count), inline=True)
+    embed.add_field(name="Причина мута", value=str(mute_info.get("reason") or "Не указана")[:1024], inline=False)
+    try:
+        await channel.send(embed=embed)
+    except Exception as exc:
+        logger.warning("Could not send mute-spam alert to channel %s: %s", channel_id, exc)
 
 
 async def _send_mute_notification(channel, title: str, target, moderator, reason: str, expires_at: Optional[datetime] = None):
@@ -3801,7 +3875,9 @@ async def slash_unmute(interaction: discord.Interaction, member: discord.Member,
     if not await _user_has_mute_permission(interaction.user):
         await interaction.response.send_message("❌ У вас нет прав на снятие мута.", ephemeral=True)
         return
-    restored = await _restore_voice_on_unmute(member, reason or "")
+    stored_mutes = await asyncio.to_thread(bot_data.get_stored_mutes)
+    mute_record = stored_mutes.get(str(member.id), {}) if isinstance(stored_mutes, dict) else {}
+    restored = await _restore_voice_on_unmute(member, reason or "", mute_record.get("spam_timeout_until"))
     removed = await asyncio.to_thread(bot_data.remove_mute, str(member.id)) if restored else False
     await asyncio.to_thread(bot_data.log_discord_command, "unmute", {
         "moderator_id": str(interaction.user.id), "moderator": interaction.user.display_name,
@@ -3817,6 +3893,16 @@ async def slash_unmute(interaction: discord.Interaction, member: discord.Member,
         await _send_mute_notification(interaction.channel, "🔊 Мут снят", member, interaction.user, reason or "")
     except Exception as exc:
         logger.warning("Failed to publish unmute notification: %s", exc)
+
+
+@bot.tree.command(name="setmutealertchannel", description="Установить канал уведомлений о тайм-ауте за сообщения во время мута")
+@app_commands.describe(channel="Канал для embed-уведомлений (по умолчанию #1549762578048360518)")
+async def slash_set_mute_alert_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    if not await _user_has_mute_permission(interaction.user):
+        await interaction.response.send_message("❌ У вас нет прав менять канал уведомлений.", ephemeral=True)
+        return
+    await asyncio.to_thread(bot_data.set_bot_config, "mute_spam_channel_id", str(channel.id))
+    await interaction.response.send_message(f"Канал уведомлений установлен: {channel.mention}", ephemeral=True)
 
 
 @bot.tree.command(name="close", description="Закрыть тикет через указанное время (только для администраторов)")
@@ -5340,6 +5426,18 @@ async def on_message(message: discord.Message):
         author_mention = message.author.mention
         channel_mention = getattr(message.channel, "mention", f"#{channel_name}") if hasattr(message.channel, "mention") else f"#{channel_name}"
         mute_info = active_mutes.get(str(message.author.id), {})
+        try:
+            attempt_count, reached_threshold, recorded_mute = await asyncio.to_thread(
+                bot_data.record_muted_message_attempt, str(message.author.id)
+            )
+            if recorded_mute is not None:
+                mute_info = recorded_mute
+            if reached_threshold:
+                await _notify_mute_spam_trigger(message.author, attempt_count, mute_info)
+            if recorded_mute is not None and attempt_count >= 15 and not recorded_mute.get("spam_timeout_until"):
+                await _ensure_mute_spam_timeout(message.author, recorded_mute)
+        except Exception:
+            logger.exception("Failed to process muted-message threshold for %s", message.author.id)
         try:
             await message.delete()
         except (discord.Forbidden, discord.NotFound):

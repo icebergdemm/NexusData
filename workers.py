@@ -827,6 +827,10 @@ def task_sync_department_roles() -> dict:
                 db.flush()
                 admins_by_discord_id[dm.discord_id] = admin
                 provisioned += 1
+            elif admin.auto_provision_excluded:
+                # A superuser explicitly removed this Discord account from
+                # the site; Discord role grants must not resurrect it.
+                continue
             elif admin.is_deleted and grants:
                 # Regained a department-granting role after being
                 # soft-deleted — restore login access. Privileges stay
@@ -853,6 +857,8 @@ def task_sync_department_roles() -> dict:
             for department_id in touched_depts:
                 grant = grants.get(department_id)
                 member = existing.get(department_id)
+                if member is not None and member.is_excluded:
+                    continue
 
                 if member is not None and not member.is_auto:
                     continue  # a human has taken ownership of this row — leave it alone
@@ -936,7 +942,7 @@ def task_reconcile_department_discord_roles() -> dict:
         memberships = (
             db.query(DepartmentMember)
             .join(Department, Department.id == DepartmentMember.department_id)
-            .filter(Department.is_archived.is_(False))
+            .filter(Department.is_archived.is_(False), DepartmentMember.is_excluded.is_(False))
             .options(
                 joinedload(DepartmentMember.admin),
                 joinedload(DepartmentMember.department).joinedload(Department.access_levels),
@@ -1019,7 +1025,9 @@ def task_sync_department_kits() -> dict:
             if not level:
                 continue
 
-            members = db.query(DepartmentMember).filter(DepartmentMember.department_id == level.department_id).all()
+            members = db.query(DepartmentMember).filter(
+                DepartmentMember.department_id == level.department_id, DepartmentMember.is_excluded.is_(False)
+            ).all()
             eligible_admin_ids = {m.admin_id for m in members if level.key in (m.held_level_keys or [])}
 
             existing_grants = db.query(DepartmentKitGrant).filter(DepartmentKitGrant.binding_id == binding.id).all()
@@ -1111,7 +1119,7 @@ def task_sync_auto_server_privileges() -> dict:
         memberships = (
             db.query(DepartmentMember)
             .join(Department, Department.id == DepartmentMember.department_id)
-            .filter(Department.is_archived.is_(False))
+            .filter(Department.is_archived.is_(False), DepartmentMember.is_excluded.is_(False))
             .all()
         )
         by_admin: dict = {}

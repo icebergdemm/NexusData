@@ -159,6 +159,7 @@ def _dept_level_matches(db: Session, admin: AdminUser, grantee_key: str) -> bool
     m = db.query(DepartmentMember).filter(
         DepartmentMember.department_id == dept_id,
         DepartmentMember.admin_id == admin.id,
+        DepartmentMember.is_excluded.is_(False),
     ).first()
     return bool(m and level_key in (m.held_level_keys or []))
 

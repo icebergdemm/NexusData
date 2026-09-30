@@ -136,6 +136,7 @@ def _apply_migrations():
         ("players_data", "discord_id_confirmed", "TINYINT DEFAULT 0"),
         # admin_users: soft-delete
         ("admin_users", "is_deleted", "TINYINT NOT NULL DEFAULT 0"),
+        ("admin_users", "auto_provision_excluded", "TINYINT NOT NULL DEFAULT 0"),
         # admin browser-session lifecycle hardening
         ("admin_sessions", "last_seen_at", "DATETIME"),
         ("admin_sessions", "last_seen_ip", "VARCHAR(45)"),
@@ -289,6 +290,7 @@ def _apply_migrations():
         # Recency signal for the auto-grant tie-break ("most recent
         # assignment wins" across departments).
         ("department_members", "role_state_updated_at", "DATETIME"),
+        ("department_members", "is_excluded", "TINYINT NOT NULL DEFAULT 0"),
         # Marks a server_group_id as worker-managed vs a human's manual
         # assignment — the worker never touches a row once is_auto is False.
         ("server_player_privileges", "is_auto", "TINYINT NOT NULL DEFAULT 0"),

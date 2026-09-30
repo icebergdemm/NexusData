@@ -11,6 +11,7 @@ blocking DB work never stalls the bot's asyncio event loop (same reasoning as
 the rest of this app's run_in_threadpool usage).
 """
 import os
+import threading
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Optional
@@ -21,6 +22,7 @@ from database import SessionLocal
 
 _TICKET_IPC_ACTION_TYPES = frozenset({"ticket_send_message", "ticket_close_channel"})
 _TICKET_IPC_MARKER = "nexus-ticket-ipc-v1"
+_mute_store_lock = threading.Lock()
 
 
 def enqueue_ticket_bot_action(
@@ -464,11 +466,16 @@ def get_active_mutes() -> dict:
 
 
 def set_mute(discord_id: str, expires_at: datetime, issued_by: dict, reason: str = "") -> None:
-    mutes = get_stored_mutes()
-    mutes[str(discord_id)] = {
-        "expires_at": expires_at.isoformat(), "issued_by": issued_by, "reason": reason,
-    }
-    set_json_bot_config("discord_mutes", mutes)
+    with _mute_store_lock:
+        mutes = get_stored_mutes()
+        previous = mutes.get(str(discord_id)) if isinstance(mutes.get(str(discord_id)), dict) else {}
+        record = {
+            "expires_at": expires_at.isoformat(), "issued_by": issued_by, "reason": reason,
+        }
+        if previous.get("spam_timeout_until"):
+            record["spam_timeout_until"] = previous["spam_timeout_until"]
+        mutes[str(discord_id)] = record
+        set_json_bot_config("discord_mutes", mutes)
 
 
 def remove_mute(discord_id: str, expected_expires_at: str | None = None) -> bool:
@@ -477,16 +484,44 @@ def remove_mute(discord_id: str, expected_expires_at: str | None = None) -> bool
     ``expected_expires_at`` prevents a delayed cleanup pass from deleting a
     newer mute issued for the same Discord member.
     """
-    mutes = get_stored_mutes()
-    if str(discord_id) not in mutes:
-        return False
-    if expected_expires_at is not None:
-        current = mutes[str(discord_id)]
-        if not isinstance(current, dict) or current.get("expires_at") != expected_expires_at:
+    with _mute_store_lock:
+        mutes = get_stored_mutes()
+        if str(discord_id) not in mutes:
             return False
-    del mutes[str(discord_id)]
-    set_json_bot_config("discord_mutes", mutes)
-    return True
+        if expected_expires_at is not None:
+            current = mutes[str(discord_id)]
+            if not isinstance(current, dict) or current.get("expires_at") != expected_expires_at:
+                return False
+        del mutes[str(discord_id)]
+        set_json_bot_config("discord_mutes", mutes)
+        return True
+
+
+def record_muted_message_attempt(discord_id: str) -> tuple[int, bool, dict | None]:
+    """Count one deleted message and report whether this is the 15th attempt."""
+    with _mute_store_lock:
+        mutes = get_stored_mutes()
+        key = str(discord_id)
+        value = mutes.get(key)
+        if not isinstance(value, dict):
+            return 0, False, None
+        count = int(value.get("message_attempts") or 0) + 1
+        value["message_attempts"] = count
+        mutes[key] = value
+        set_json_bot_config("discord_mutes", mutes)
+        return count, count == 15, dict(value)
+
+
+def mark_mute_spam_timeout(discord_id: str, timeout_until: datetime) -> None:
+    with _mute_store_lock:
+        mutes = get_stored_mutes()
+        key = str(discord_id)
+        value = mutes.get(key)
+        if not isinstance(value, dict):
+            return
+        value["spam_timeout_until"] = timeout_until.isoformat()
+        mutes[key] = value
+        set_json_bot_config("discord_mutes", mutes)
 
 
 def log_discord_command(action: str, details: dict) -> None:
@@ -796,7 +831,7 @@ def get_department_rating_leaderboard(department_id: int, limit: int = 10) -> Op
         members = (
             db.query(DepartmentMember)
             .options(joinedload(DepartmentMember.admin))
-            .filter(DepartmentMember.department_id == dept.id)
+            .filter(DepartmentMember.department_id == dept.id, DepartmentMember.is_excluded.is_(False))
             .all()
         )
         leaderboard = sorted(

@@ -364,7 +364,7 @@ async def get_me(request: Request, db: Session = Depends(get_db), current_admin:
     _my_depts = (
         db.query(Department)
         .join(DepartmentMember, DepartmentMember.department_id == Department.id)
-        .filter(DepartmentMember.admin_id == current_admin.id, Department.is_archived.is_(False))
+        .filter(DepartmentMember.admin_id == current_admin.id, DepartmentMember.is_excluded.is_(False), Department.is_archived.is_(False))
         .order_by(Department.name)
         .all()
     )
@@ -1143,6 +1143,7 @@ async def api_create_admin_user(request: Request, db: Session = Depends(get_db),
         # Privileges stay wiped (delete_admin cleared them on delete); an
         # admin has to re-grant a group/permissions explicitly.
         existing.is_deleted = 0
+        existing.auto_provision_excluded = False
         existing.role = role
         db.commit()
         log_admin_action(db, current_admin.id, "restore_admin", {

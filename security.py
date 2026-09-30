@@ -567,7 +567,9 @@ def compute_department_site_permissions(db, admin_id: int) -> dict:
 
     from models import DepartmentMember, DepartmentAccessLevel
 
-    memberships = db.query(DepartmentMember).filter(DepartmentMember.admin_id == admin_id).all()
+    memberships = db.query(DepartmentMember).filter(
+        DepartmentMember.admin_id == admin_id, DepartmentMember.is_excluded.is_(False)
+    ).all()
     if not memberships:
         result = {}
     else:

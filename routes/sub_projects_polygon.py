@@ -43,7 +43,7 @@ def _departments_with_test_server_access(db: Session, admin: AdminUser, action: 
         db.query(Department)
         .join(DepartmentMember, DepartmentMember.department_id == Department.id)
         .options(joinedload(Department.access_levels))
-        .filter(DepartmentMember.admin_id == admin.id, Department.is_archived.is_(False))
+        .filter(DepartmentMember.admin_id == admin.id, DepartmentMember.is_excluded.is_(False), Department.is_archived.is_(False))
         .all()
     )
     out = []

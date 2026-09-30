@@ -17,7 +17,7 @@ import {
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { PlatformIcon } from "@/components/layout/PlatformIcon"
 import {
-  CheckCircle2, ClipboardCheck, Download, Loader2, RotateCw, Undo2, UserCog, X, XCircle,
+  ArrowLeft, CheckCircle2, ClipboardCheck, Download, Loader2, RotateCw, Undo2, UserCog, X, XCircle,
 } from "lucide-react"
 import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
@@ -178,6 +178,9 @@ export function SubProjectDetailPage() {
 
   return (
     <div className="space-y-4">
+      <Button variant="ghost" size="sm" onClick={() => navigate("/sub-projects")} className="gap-1.5">
+        <ArrowLeft className="size-4" /> К списку проектов
+      </Button>
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <div>

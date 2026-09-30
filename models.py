@@ -141,6 +141,8 @@ class AdminUser(Base):
     individual_permissions = Column(JSON, nullable=True)
     is_superuser = Column(Boolean, default=False)
     is_deleted = Column(Integer, default=0)  # 1 = soft-deleted, blocks login
+    # Explicitly removed site users are not re-created by Discord role sync.
+    auto_provision_excluded = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, default=func.now())
     last_login = Column(DateTime, nullable=True)
     # True when this account was auto-provisioned by task_sync_department_roles
@@ -2243,6 +2245,8 @@ class DepartmentMember(Base):
     # uses this as the "most recent assignment wins" tie-break when the same
     # admin simultaneously qualifies for auto-grants via multiple departments.
     role_state_updated_at = Column(DateTime, nullable=True)
+    # A removal from the site roster must survive Discord role reconciliation.
+    is_excluded = Column(Boolean, nullable=False, default=False)
 
     department = relationship("Department", back_populates="members")
     admin = relationship("AdminUser", foreign_keys=[admin_id])
