@@ -196,11 +196,11 @@ def get_address_detector_status() -> dict:
         return {"active": False, "queue_depth": 0, "events": list(_address_detector_startup_events)}
     runtime_status = runtime.status()
     return {
+        **runtime_status,
         "active": True,
         "queue_depth": runtime.service.queue.qsize(),
         "queue_capacity": runtime.service.queue.maxsize,
         "events": [*_address_detector_startup_events, *runtime_status.get("events", [])],
-        "counters": runtime_status.get("counters", {}),
     }
 
 

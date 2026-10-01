@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable, Protocol
 
 from .analyzer import AnalysisResult, Analyzer, Verdict
+from .context import AddressContext
 from .filter import TriggerMatch
 
 logger = logging.getLogger("NexusBot.address_detector")
@@ -18,14 +19,31 @@ class ReactionPort(Protocol):
     async def remove(self, message: object) -> None: ...
 
 
-@dataclass(frozen=True)
+@dataclass
 class DetectorJob:
     message: object
     match: TriggerMatch | None = None
+    revision: int = 1
+    candidate_context: AddressContext | None = None
+    context: AddressContext | None = None
+
+    @property
+    def message_id(self) -> int:
+        return int(getattr(self.message, "id", getattr(self.message, "message_id", 0)))
+
+
+@dataclass(frozen=True)
+class SubmitResult:
+    accepted: bool
+    reason: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.accepted
 
 
 SignalCallback = Callable[[object, AnalysisResult], Awaitable[None] | None]
 EventCallback = Callable[[str, str | None], None]
+ResultCallback = Callable[[DetectorJob, AnalysisResult], Awaitable[bool | None] | bool | None]
 
 
 class AddressDetectorService:
@@ -41,7 +59,7 @@ class AddressDetectorService:
         worker_count: int = 1,
         analysis_timeout: float = 15.0,
         on_event: EventCallback | None = None,
-        on_result: SignalCallback | None = None,
+        on_result: ResultCallback | None = None,
     ) -> None:
         self.analyzer = analyzer
         self.reactions = reactions
@@ -69,22 +87,26 @@ class AddressDetectorService:
         await asyncio.gather(*self._workers, return_exceptions=True)
         self._workers = []
 
-    async def submit(self, message: object, match: TriggerMatch | None = None, *, marker_added: bool = False) -> bool:
+    async def submit(
+        self, message: object, match: TriggerMatch | None = None, *, marker_added: bool = False,
+        revision: int = 1, candidate_context: AddressContext | None = None,
+    ) -> SubmitResult:
         """Add the marker first, then enqueue. False means the queue rejected it."""
 
         if self._stopping:
-            return False
+            await self._remove_reaction(message)
+            return SubmitResult(False, "stopping")
         if not marker_added:
             await self.add_marker(message)
 
         try:
-            self.queue.put_nowait(DetectorJob(message, match))
+            self.queue.put_nowait(DetectorJob(message, match, revision, candidate_context))
         except asyncio.QueueFull:
             logger.error("address_detector queue_overflow")
             self._event("queue_overflow", "очередь заполнена")
             await self._remove_reaction(message)
-            return False
-        return True
+            return SubmitResult(False, "queue_overflow")
+        return SubmitResult(True)
 
     async def add_marker(self, message: object) -> None:
         try:
@@ -108,15 +130,19 @@ class AddressDetectorService:
             try:
                 if job is None:
                     return
-                result = await self._analyze(job if job.match is not None else job.message)
+                result = await self._analyze(job)
+                accepted = True
+                if self.on_result is not None:
+                    callback_result = self.on_result(job, result)
+                    if inspect.isawaitable(callback_result):
+                        callback_result = await callback_result
+                    accepted = callback_result is not False
+                if not accepted:
+                    continue
                 if result.verdict is Verdict.CLEAN:
                     await self._remove_reaction(job.message)
                 else:
                     callback_result = self.on_signal(job.message, result)
-                    if inspect.isawaitable(callback_result):
-                        await callback_result
-                if self.on_result is not None:
-                    callback_result = self.on_result(job.message, result)
                     if inspect.isawaitable(callback_result):
                         await callback_result
             except Exception:
@@ -125,9 +151,10 @@ class AddressDetectorService:
             finally:
                 self.queue.task_done()
 
-    async def _analyze(self, message: object) -> AnalysisResult:
+    async def _analyze(self, job: DetectorJob) -> AnalysisResult:
         try:
-            return await asyncio.wait_for(self.analyzer.analyze(message), timeout=self.analysis_timeout)
+            analyzer_input = job if job.match is not None else job.message
+            return await asyncio.wait_for(self.analyzer.analyze(analyzer_input), timeout=self.analysis_timeout)
         except asyncio.TimeoutError:
             logger.warning("address_detector analysis_timeout")
             self._event("analysis_timeout", "analysis timeout")

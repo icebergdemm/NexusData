@@ -27,6 +27,8 @@ LLM_CLIENTS = {
                               "timeout": 240.0, "max_tokens": 2048, "max_queue_depth": 20},
     "monster_llm": {"backend": "dossier", "priority": 120, "quota_min": 12,
                     "timeout": 240.0, "max_tokens": 4096, "max_queue_depth": 50},
+    "address_detector": {"backend": "dossier", "priority": 200, "quota_min": 6,
+                         "timeout": 25.0, "max_tokens": 64, "max_queue_depth": 10},
 }
 BACKENDS = {
     "dossier": {"url_key": "ai_dossier_url", "key": "ai_dossier_api_key",
@@ -53,6 +55,17 @@ def _database_local_now() -> datetime:
 def set_wake_callback(callback) -> None:
     global _wake
     _wake = callback
+
+
+def configure_client(client_id: str, *, quota_min: int, max_queue_depth: int) -> None:
+    """Apply the address detector's runtime limits without changing other clients."""
+    client = LLM_CLIENTS.get(client_id)
+    if client is None:
+        raise LLMGatewayError("Unknown LLM client")
+    if not 1 <= quota_min <= 60 or not 1 <= max_queue_depth <= 100:
+        raise LLMGatewayError("Invalid LLM client limits")
+    client["quota_min"] = quota_min
+    client["max_queue_depth"] = max_queue_depth
 
 
 def _request_hash(client_id: str, messages: Any, params: dict) -> str:
@@ -142,8 +155,20 @@ def poll(ticket_id: int) -> dict:
         row = db.query(AILlmRequest).filter(AILlmRequest.id == ticket_id).first()
         if not row:
             raise LLMGatewayError("Unknown LLM ticket", 404)
+        now = _database_local_now()
+        queue_end = row.started_at or now
+        backend_end = row.finished_at or now
+        queue_wait_ms = max(0, int((queue_end - row.created_at).total_seconds() * 1000))
+        backend_ms = (
+            max(0, int((backend_end - row.started_at).total_seconds() * 1000))
+            if row.started_at else None
+        )
         return {"ticket_id": row.id, "client_id": row.client_id, "status": row.status,
-                "result": row.result_ref, "error": row.error, "attempts": row.attempts}
+                "result": row.result_ref, "error": row.error, "attempts": row.attempts,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "started_at": row.started_at.isoformat() if row.started_at else None,
+                "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+                "queue_wait_ms": queue_wait_ms, "backend_ms": backend_ms}
     finally:
         db.close()
 
@@ -168,6 +193,19 @@ def cancel(ticket_id: int) -> bool:
         except Exception:
             logger.exception("Failed to write LLM cancellation task log")
         return True
+    finally:
+        db.close()
+
+
+def find_ticket(client_id: str, idempotency_key: str) -> int | None:
+    """Find a durable request so detector recovery can reattach without resubmitting."""
+    db = SessionLocal()
+    try:
+        row = db.query(AILlmRequest.id).filter(
+            AILlmRequest.client_id == client_id,
+            AILlmRequest.idempotency_key == idempotency_key,
+        ).one_or_none()
+        return int(row[0]) if row else None
     finally:
         db.close()
 

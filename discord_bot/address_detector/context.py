@@ -59,7 +59,9 @@ class ContextCollector:
     def __init__(self, history_limit: int = 4) -> None:
         self.history_limit = max(0, min(history_limit, 5))
 
-    async def collect(self, message: object, match: TriggerMatch) -> AddressContext:
+    async def collect(
+        self, message: object, match: TriggerMatch, base: AddressContext | None = None
+    ) -> AddressContext:
         reference = getattr(message, "reference", None)
         reply = getattr(reference, "resolved", None) if reference is not None else None
         if reply is None and reference is not None and getattr(reference, "message_id", None) is not None:
@@ -90,19 +92,19 @@ class ContextCollector:
         mentions = tuple(str(getattr(mention, "id")) for mention in getattr(message, "mentions", ()))
         reply_snapshot = _snapshot(reply)
         return AddressContext(
-            message_id=int(getattr(message, "id")),
-            guild_id=getattr(guild, "id", None),
-            channel_id=getattr(channel, "id", None),
-            author_id=getattr(author, "id", None),
-            author_display_name=str(display_name),
-            timestamp=getattr(message, "created_at", None),
-            raw_content=str(getattr(message, "content", "")),
-            cleaned_content=match.cleaned_text,
-            trigger_tokens=tuple(match.tokens),
+            message_id=base.message_id if base else int(getattr(message, "id")),
+            guild_id=base.guild_id if base else getattr(guild, "id", None),
+            channel_id=base.channel_id if base else getattr(channel, "id", None),
+            author_id=base.author_id if base else getattr(author, "id", None),
+            author_display_name=base.author_display_name if base else str(display_name),
+            timestamp=base.timestamp if base else getattr(message, "created_at", None),
+            raw_content=base.raw_content if base else str(getattr(message, "content", "")),
+            cleaned_content=base.cleaned_content if base else match.cleaned_text,
+            trigger_tokens=base.trigger_tokens if base else tuple(match.tokens),
             is_reply=reply_snapshot is not None,
             reply=reply_snapshot,
             reply_author_id=reply_snapshot.author_id if reply_snapshot else None,
-            mentions=mentions,
+            mentions=base.mentions if base else mentions,
             previous_messages=tuple(previous),
             jump_url=getattr(message, "jump_url", None),
         )

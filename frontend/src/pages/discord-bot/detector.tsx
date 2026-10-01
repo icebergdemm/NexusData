@@ -32,6 +32,7 @@ interface DetectorEffective {
   emoji_configured: boolean
   analyzer_mode: string
   model_configured: boolean
+  llm_shadow_enabled?: boolean
   monitored_channel_ids: string[]
   excluded_channel_ids: string[]
   signals_channel_id: string
@@ -45,6 +46,13 @@ interface DetectorResponse {
     queue_depth: number
     queue_capacity?: number
     counters?: Record<string, number>
+    shadow_enabled?: boolean
+    shadow_in_flight?: number
+    candidates_per_minute?: number
+    qwen_requests_per_minute?: number
+    qwen_shadow_queue_wait_ms?: { count: number; avg: number | null; p95: number | null }
+    qwen_shadow_backend_ms?: { count: number; avg: number | null; p95: number | null }
+    last_shadow_error?: string | null
     events?: { at: string; event: string; count: number; level?: "info" | "warning" | "error"; detail?: string }[]
   }
   config_error: string | null
@@ -343,6 +351,7 @@ export function AddressDetectorTab({ data, onSave }: Props) {
   const effective = detector?.effective
   const canEdit = !!data?.can_manage_config
   const enabled = configured(data, "moderation_address_detector_enabled", effective?.enabled ? "true" : "false") === "true"
+  const shadowEnabled = configured(data, "address_llm_shadow_enabled", effective?.llm_shadow_enabled ? "true" : "false") === "true"
   const active = !!detector?.runtime.active
   const monitoredIds = effective?.monitored_channel_ids ?? parseIds(configured(data, "monitored_channel_ids", ""))
   const signalChannelId = effective?.signals_channel_id ?? configured(data, "moderation_signals_channel_id", "")
@@ -354,6 +363,7 @@ export function AddressDetectorTab({ data, onSave }: Props) {
   const warning = [...(detector?.runtime.events ?? [])].reverse().find((entry) =>
     entry.event === "startup_validation_warning" || entry.event === "model_degraded",
   )
+  const lastShadowEvent = [...(detector?.runtime.events ?? [])].reverse().find((entry) => entry.event.startsWith("qwen_shadow_"))
   const statusReason = detector?.config_error ?? diagnostic?.detail ?? (!monitoredIds.length && enabled ? "whitelist каналов пуст" : undefined)
   const statusText = statusReason ? "Не запущен" : active && warning ? "Активен с предупреждением" : active ? "Активен" : enabled ? "Ожидает запуска" : "Выключен"
   const statusClass = statusReason ? "border-destructive/50 bg-destructive/5" : warning ? "border-amber-500/40 bg-amber-500/5" : active ? "border-emerald-500/40 bg-emerald-500/5" : "border-border"
@@ -467,6 +477,36 @@ export function AddressDetectorTab({ data, onSave }: Props) {
       </div>
 
       <Card>
+        <CardHeader><CardTitle className="flex items-center gap-2 text-sm"><Activity className="size-4" /> Qwen shadow comparison</CardTitle></CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-sm">
+              <Badge variant={shadowEnabled ? "default" : "secondary"}>{shadowEnabled ? "включён, только shadow" : "выключен"}</Badge>
+              <span className="text-xs text-muted-foreground">Результат не меняет текущий verdict и moderator signal.</span>
+            </div>
+            <Switch checked={shadowEnabled} disabled={!canEdit} onCheckedChange={(checked) => onSave("address_llm_shadow_enabled", checked ? "true" : "false")} aria-label="Включить Qwen shadow comparison" />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <ConfigField label="Лимит запросов в минуту" configKey="address_llm_quota_min" value={configured(data, "address_llm_quota_min", "6")} disabled={!canEdit} onSave={onSave} />
+            <ConfigField label="Лимит очереди gateway" configKey="address_llm_queue_limit" value={configured(data, "address_llm_queue_limit", "10")} disabled={!canEdit} onSave={onSave} />
+            <div><p className="font-mono text-lg">{detector?.runtime.shadow_in_flight ?? 0}</p><p className="text-xs text-muted-foreground">shadow запросов отслеживается</p></div>
+            <div><p className="font-mono text-lg">{detector?.runtime.qwen_requests_per_minute ?? 0}</p><p className="text-xs text-muted-foreground">Qwen requests / min</p></div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-xs">
+            <div><p className="font-mono text-base">{detector?.runtime.counters?.qwen_shadow_submitted ?? 0}</p><p className="text-muted-foreground">submitted</p></div>
+            <div><p className="font-mono text-base">{detector?.runtime.counters?.qwen_shadow_completed ?? 0}</p><p className="text-muted-foreground">completed</p></div>
+            <div><p className="font-mono text-base">{detector?.runtime.counters?.qwen_shadow_failed ?? 0}</p><p className="text-muted-foreground">failed</p></div>
+            <div><p className="font-mono text-base">{detector?.runtime.counters?.qwen_shadow_timeout ?? 0}</p><p className="text-muted-foreground">timeout</p></div>
+            <div><p className="font-mono text-base">{detector?.runtime.counters?.qwen_shadow_invalid_response ?? 0}</p><p className="text-muted-foreground">invalid response</p></div>
+            <div><p className="font-mono text-base">{detector?.runtime.qwen_shadow_queue_wait_ms?.avg ?? "—"} / {detector?.runtime.qwen_shadow_queue_wait_ms?.p95 ?? "—"} ms</p><p className="text-muted-foreground">queue wait avg / p95</p></div>
+            <div><p className="font-mono text-base">{detector?.runtime.qwen_shadow_backend_ms?.avg ?? "—"} / {detector?.runtime.qwen_shadow_backend_ms?.p95 ?? "—"} ms</p><p className="text-muted-foreground">backend avg / p95</p></div>
+            <div><p className="font-mono text-base">{lastShadowEvent?.event ?? "—"}</p><p className="text-muted-foreground">последний статус</p></div>
+          </div>
+          {detector?.runtime.last_shadow_error && <p className="break-words rounded border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">Последняя ошибка: {detector.runtime.last_shadow_error}</p>}
+        </CardContent>
+      </Card>
+
+      <Card>
         <CardHeader><CardTitle className="text-sm">Контекст и обработка</CardTitle></CardHeader>
         <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <ConfigField label="Сообщений контекста (1–5)" configKey="address_context_messages" value={configured(data, "address_context_messages", "4")} disabled={!canEdit} onSave={onSave} />
@@ -483,7 +523,7 @@ export function AddressDetectorTab({ data, onSave }: Props) {
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Card><CardContent className="py-4"><p className="font-mono text-xl">{effective?.monitored_channel_count ?? 0}</p><p className="text-xs text-muted-foreground">каналов в effective whitelist</p></CardContent></Card>
         <Card><CardContent className="py-4"><p className="font-mono text-xl">{detector?.runtime.queue_depth ?? 0}</p><p className="text-xs text-muted-foreground">задач в очереди</p></CardContent></Card>
-        <Card><CardContent className="py-4"><p className="font-mono text-xl">{detector?.runtime.counters?.candidate_detected ?? 0}</p><p className="text-xs text-muted-foreground">candidate detected</p></CardContent></Card>
+        <Card><CardContent className="py-4"><p className="font-mono text-xl">{detector?.runtime.counters?.trigger_candidates ?? 0}</p><p className="text-xs text-muted-foreground">trigger candidates</p></CardContent></Card>
         <Card><CardContent className="py-4"><p className="font-mono text-xl">{effective?.analyzer_mode ?? "-"}</p><p className="text-xs text-muted-foreground">режим анализатора</p></CardContent></Card>
       </div>
 

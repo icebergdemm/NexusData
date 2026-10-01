@@ -25,6 +25,12 @@ KNOWN_KEYS = (
     "onnx_tokenizer_path",
     "address_queue_size",
     "address_worker_count",
+    "address_llm_shadow_enabled",
+    "address_llm_quota_min",
+    "address_llm_queue_limit",
+    "address_llm_queue_wait_timeout_seconds",
+    "address_llm_backend_timeout_seconds",
+    "address_llm_max_request_age_seconds",
 )
 
 
@@ -115,6 +121,12 @@ class DetectorConfig:
     onnx_tokenizer_path: str = ""
     queue_size: int = 128
     worker_count: int = 1
+    llm_shadow_enabled: bool = False
+    llm_quota_min: int = 6
+    llm_queue_limit: int = 10
+    llm_queue_wait_timeout_seconds: int = 60
+    llm_backend_timeout_seconds: int = 25
+    llm_max_request_age_seconds: int = 120
 
     @classmethod
     def from_settings(cls, settings: object) -> "DetectorConfig":
@@ -139,6 +151,9 @@ class DetectorConfig:
             "model_configured": bool(self.onnx_model_path),
             "queue_size": self.queue_size,
             "worker_count": self.worker_count,
+            "llm_shadow_enabled": self.llm_shadow_enabled,
+            "llm_quota_min": self.llm_quota_min,
+            "llm_queue_limit": self.llm_queue_limit,
         }
 
 
@@ -164,4 +179,10 @@ def load_detector_config(settings: object, overrides: Mapping[str, object]) -> D
         onnx_tokenizer_path=str(_raw(settings, overrides, "onnx_tokenizer_path", "") or "").strip(),
         queue_size=_int(_raw(settings, overrides, "address_queue_size", 128), "address_queue_size", 1, 10000),
         worker_count=_int(_raw(settings, overrides, "address_worker_count", 1), "address_worker_count", 1, 16),
+        llm_shadow_enabled=_bool(_raw(settings, overrides, "address_llm_shadow_enabled", False), "address_llm_shadow_enabled"),
+        llm_quota_min=_int(_raw(settings, overrides, "address_llm_quota_min", 6), "address_llm_quota_min", 1, 60),
+        llm_queue_limit=_int(_raw(settings, overrides, "address_llm_queue_limit", 10), "address_llm_queue_limit", 1, 100),
+        llm_queue_wait_timeout_seconds=_int(_raw(settings, overrides, "address_llm_queue_wait_timeout_seconds", 60), "address_llm_queue_wait_timeout_seconds", 1, 600),
+        llm_backend_timeout_seconds=_int(_raw(settings, overrides, "address_llm_backend_timeout_seconds", 25), "address_llm_backend_timeout_seconds", 1, 120),
+        llm_max_request_age_seconds=_int(_raw(settings, overrides, "address_llm_max_request_age_seconds", 120), "address_llm_max_request_age_seconds", 1, 3600),
     )
