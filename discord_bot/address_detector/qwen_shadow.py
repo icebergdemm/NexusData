@@ -16,7 +16,13 @@ BACKGROUND_CLIENT_ID = "address_detector_background"
 CLIENT_ID = FAST_CLIENT_ID
 MAX_TOKENS = 64
 SYSTEM_PROMPT = (
-    "Сначала определи характер употребления: прямое обращение автора или цитата, пересказ, чужая речь, "
+    "Классифицируй характер употребления только самого сообщения с classify_index. Для каждого результата "
+    "семантический класс относится только к тексту этого сообщения. Другие сообщения — только контекст для "
+    "адресата, reply/mention-связей и понимания ссылок; "
+    "соседняя цитата не делает текущее сообщение цитатой; соседнее метаобсуждение не делает текущее сообщение "
+    "метаобсуждением; соседний пример также не меняет "
+    "класс текущего. Сначала определи характер "
+    "употребления: прямое обращение автора или цитата, пересказ, чужая речь, "
     "пример либо обсуждение языка/выражения (метаобсуждение). Для цитаты, пересказа и чужой речи используй "
     "quoted_or_reported, для примера и метаобсуждения — example_or_metadiscussion; наличие конкретного "
     "адресата для этих классов не требуется, и ambiguous не должен их перебивать. Если у сообщения есть "
@@ -56,6 +62,13 @@ REASON_CODES = (
     "insufficient_context",
     "other",
 )
+_ALLOWED_REASONS = {
+    "no_violation": {"other"},
+    "direct_familiar_address": set(REASON_CODES[:6]) | {"other"},
+    "quoted_or_reported": {"quoted_content", "reported_speech", "other"},
+    "example_or_metadiscussion": {"metadiscussion", "other"},
+    "ambiguous": {"no_specific_addressee", "insufficient_context", "other"},
+}
 RESPONSE_FORMAT = {
     "type": "json_schema",
     "json_schema": {
@@ -258,6 +271,8 @@ def parse_results(content: str, requested_indexes: list[int]) -> list[dict[str, 
             raise ValueError("response contains a duplicate index")
         if item["classification"] not in CLASSIFICATIONS or item["reason_code"] not in REASON_CODES:
             raise ValueError("response contains an unknown enum value")
+        if item["reason_code"] not in _ALLOWED_REASONS[item["classification"]]:
+            raise ValueError("classification and reason_code are incompatible")
         seen.add(index)
         parsed.append({"index": index, "classification": item["classification"], "reason_code": item["reason_code"]})
     if seen != set(requested_indexes):

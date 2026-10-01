@@ -16,7 +16,7 @@ def _is_system_message(message: object) -> bool:
     message_type = getattr(message, "type", None)
     if message_type is None:
         return False
-    return getattr(message_type, "name", str(message_type)) != "default"
+    return getattr(message_type, "name", str(message_type)) not in {"default", "reply"}
 
 
 def in_scope(message: object, config: ScopeConfig) -> bool:
