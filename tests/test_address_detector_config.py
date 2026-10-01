@@ -58,6 +58,9 @@ def test_detector_config_defaults_to_disabled_without_whitelist() -> None:
 
     assert config.enabled is False
     assert config.monitored_channel_ids == set()
+    assert config.llm_shadow_enabled is False
+    assert config.llm_quota_min == 6
+    assert config.llm_queue_limit == 10
 
 
 def test_empty_db_override_can_clear_env_whitelist() -> None:

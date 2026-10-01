@@ -30,6 +30,7 @@ class AnalysisResult:
     backend_ms: int | None = None
     total_ms: int | None = None
     request_chars: int | None = None
+    idempotency_key: str | None = None
 
     @classmethod
     def uncertain(cls, reason: str, *, classifier_version: str = "fallback") -> "AnalysisResult":
@@ -40,12 +41,15 @@ class AnalysisResult:
         )
 
     @classmethod
-    def failed(cls, reason: str, *, classifier_version: str = "qwen") -> "AnalysisResult":
+    def failed(
+        cls, reason: str, *, classifier_version: str = "qwen", idempotency_key: str | None = None,
+    ) -> "AnalysisResult":
         return cls(
             verdict=Verdict.UNCERTAIN,
             reason=reason,
             classifier_version=classifier_version,
             operational_failure=True,
+            idempotency_key=idempotency_key,
         )
 
 

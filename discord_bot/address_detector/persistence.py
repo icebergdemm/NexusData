@@ -191,6 +191,12 @@ class AddressDetectorStore:
             revisions = dict(snapshot.get("revisions") or {})
             entry = dict(revisions.get(str(revision)) or {})
             entry["classifier_context"] = payload
+            from .qwen_shadow import idempotency_key
+            entry["semantic_request"] = {
+                "message_id": context.message_id,
+                "revision": revision,
+                "idempotency_key": idempotency_key(context.message_id, revision),
+            }
             revisions[str(revision)] = entry
             signal.context_snapshot = {**snapshot, "revisions": revisions}
             db.commit()
@@ -236,10 +242,13 @@ class AddressDetectorStore:
             entry = dict(revisions.get(str(revision)) or {})
             entry["semantic_analysis"] = {
                 "status": "completed",
+                "message_id": context.message_id,
+                "revision": revision,
                 "classification": result.classification,
                 "reason_code": result.reason_code,
                 "verdict": result.verdict.value,
                 "ticket_id": result.ticket_id,
+                "idempotency_key": result.idempotency_key,
                 "queue_wait_ms": result.queue_wait_ms,
                 "backend_ms": result.backend_ms,
                 "total_ms": result.total_ms,

@@ -1,72 +1,22 @@
 import asyncio
 from copy import deepcopy
-from datetime import datetime, timezone
-from types import SimpleNamespace
+import time as time_module
+import pytest
 
 from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-import discord_bot.address_detector.runtime as runtime_module
+import discord_bot.address_detector.qwen_shadow as qwen
 import services_llm_gateway as gateway
-from discord_bot.address_detector.analyzer import AnalysisResult, Verdict
+from discord_bot.address_detector.analyzer import Verdict
 from discord_bot.address_detector.config import DetectorConfig
-from discord_bot.address_detector.context import AddressContext
-from discord_bot.address_detector.runtime import AddressDetectorRuntime
-from discord_bot.address_detector.service import DetectorJob
+from discord_bot.address_detector.qwen_shadow import FAST_CLIENT_ID, QwenSemanticAnalyzer
 from models import AILlmRequest
 
 
-def _context(message_id=321):
-    return AddressContext(
-        message_id=message_id, guild_id=1, channel_id=7, author_id=3,
-        author_display_name="speaker", timestamp=datetime.now(timezone.utc),
-        raw_content="ты можешь скинуть лог?", cleaned_content="ты можешь скинуть лог?",
-        trigger_tokens=("ты",), is_reply=False, reply=None, reply_author_id=None,
-        mentions=(), previous_messages=(), jump_url=None,
-    )
-
-
-class Store:
-    def __init__(self):
-        self.shadow = {}
-        self.results = []
-
-    def pending_shadow(self):
-        return []
-
-    def set_shadow(self, message_id, revision, value):
-        self.shadow[(message_id, revision)] = dict(value)
-        return True
-
-    def is_current(self, message_id, revision):
-        return True
-
-    def record_analysis(self, context, result, _window, _revision):
-        self.results.append(result)
-        return SimpleNamespace(incident_id=1, should_ping_moderators=True, message_count=1)
-
-
-class Reactions:
-    async def add(self, _message):
-        pass
-
-    async def remove(self, _message):
-        pass
-
-
-def _config(shadow=True, **overrides):
-    return DetectorConfig(
-        enabled=True, monitored_channel_ids={7}, llm_shadow_enabled=shadow, **overrides,
-    )
-
-
 def _install_gateway_db(monkeypatch):
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     AILlmRequest.__table__.create(engine)
     sessions = sessionmaker(bind=engine, expire_on_commit=False)
     monkeypatch.setattr(gateway, "SessionLocal", sessions)
@@ -75,82 +25,65 @@ def _install_gateway_db(monkeypatch):
     return sessions
 
 
-def test_shadow_creates_idempotent_gateway_request_with_system_requester(monkeypatch):
-    sessions = _install_gateway_db(monkeypatch)
-    params = {
-        "model": "test-qwen",
-        "max_tokens": 64,
-        "temperature": 0,
-        "response_format": {"type": "json_object"},
+def _payload():
+    return {
+        "messages": [{"index": 0, "speaker": "s1", "text": "скинь журнал", "reply_to": None, "mentions": []}],
+        "classify_indexes": [0],
     }
-    monkeypatch.setattr(runtime_module, "request_params", lambda: params)
-    monkeypatch.setattr(runtime_module, "poll", lambda _ticket_id: {
-        "status": "succeeded", "queue_wait_ms": 12, "backend_ms": 34,
-        "result": {"choices": [{"message": {"content":
-            '{"classification":"direct_tutoiement","reason_code":"direct_address"}'}}]},
+
+
+def test_fast_qwen_request_uses_durable_gateway_policy_and_idempotency(monkeypatch):
+    sessions = _install_gateway_db(monkeypatch)
+    monkeypatch.setattr(qwen, "request_params", lambda _max_tokens=64: {
+        "model": "test-qwen", "max_tokens": 64, "temperature": 0,
+        "response_format": qwen.RESPONSE_FORMAT,
     })
+    monkeypatch.setattr(qwen, "poll", lambda ticket_id: {
+        "ticket_id": ticket_id, "status": "succeeded", "queue_wait_ms": 12, "backend_ms": 34,
+        "result": {"choices": [{"message": {"content":
+            '{"results":[{"index":0,"classification":"direct_familiar_address","reason_code":"informal_imperative"}]}'
+        }}]},
+    })
+    qwen.configure_limits(FAST_CLIENT_ID, 8, 12)
+    analyzer = QwenSemanticAnalyzer(DetectorConfig(llm_fast_quota_min=8, llm_fast_queue_limit=12))
 
-    async def scenario():
-        runtime = AddressDetectorRuntime(
-            _config(llm_quota_min=8, llm_queue_limit=12), Reactions(), store=Store(),
-        )
-        await runtime.start()
-        context = {
-            "current": {"speaker": "s1", "text": "ты можешь скинуть лог?", "reply_to": None, "mentions": []},
-            "context": [],
-        }
-        await runtime._run_shadow(321, 4, context)
-        await runtime._resume_shadow({
-            "message_id": 321, "revision": 4, "ticket_id": 1,
-            "submitted_counted": True,
-            "submitted_at": datetime.now(timezone.utc).isoformat(), "context": context,
-        }, allow_submit=True)
-        await runtime.stop()
+    async def invoke():
+        return await analyzer.classify_batch(_payload(), "address_detector_fast:321:4", client_id=FAST_CLIENT_ID)
 
-    asyncio.run(scenario())
-
+    first, _ = asyncio.run(invoke())
     db = sessions()
     try:
         row = db.query(AILlmRequest).one()
-        messages = row.request_json["payload"]["messages"]
-        assert row.client_id == "address_detector"
+        ticket_id = row.id
+        assert row.client_id == "address_detector_fast"
         assert row.requested_by is None
-        assert row.idempotency_key == "address_detector:321:4"
-        assert row.priority == 200
+        assert row.idempotency_key == "address_detector_fast:321:4"
+        assert row.priority == 50
         assert row.backend == "dossier"
         assert row.request_json["timeout"] == 25
         assert row.request_json["payload"]["max_tokens"] == 64
-        ticket_id = row.id
     finally:
         db.close()
+    assert first[0]["classification"] == "direct_familiar_address"
+    assert gateway.LLM_CLIENTS[FAST_CLIENT_ID]["quota_min"] == 8
+    assert gateway.LLM_CLIENTS[FAST_CLIENT_ID]["max_queue_depth"] == 12
 
-    client = gateway.LLM_CLIENTS["address_detector"]
-    assert (client["quota_min"], client["max_queue_depth"]) == (8, 12)
-
-    repeated_id = gateway.submit(
-        "address_detector",
-        messages,
-        params,
-        idempotency_key="address_detector:321:4",
-        timeout=25,
-    )
-    assert repeated_id == ticket_id
-
+    asyncio.run(invoke())
     db = sessions()
     try:
         assert db.query(func.count(AILlmRequest.id)).scalar() == 1
+        assert db.query(AILlmRequest).one().id == ticket_id
     finally:
         db.close()
 
 
-def test_shadow_disabled_does_not_create_gateway_request(monkeypatch):
+def test_legacy_shadow_true_does_not_enable_or_submit_qwen(monkeypatch):
     sessions = _install_gateway_db(monkeypatch)
-    runtime = AddressDetectorRuntime(_config(shadow=False), Reactions(), store=Store())
-
-    runtime._schedule_shadow(DetectorJob(message=SimpleNamespace(id=321)), _context())
-
-    assert runtime.context_analyzer.on_context is None
-    assert runtime._shadow_tasks == set()
+    config = __import__("discord_bot.address_detector.config", fromlist=["load_detector_config"]).load_detector_config(
+        object(), {"address_llm_shadow_enabled": "true"}
+    )
+    assert config.llm_enabled is False
+    assert config.llm_background_enabled is False
     db = sessions()
     try:
         assert db.query(func.count(AILlmRequest.id)).scalar() == 0
@@ -158,35 +91,30 @@ def test_shadow_disabled_does_not_create_gateway_request(monkeypatch):
         db.close()
 
 
-def test_gateway_submit_failure_cannot_replace_production_verdict_or_signal(monkeypatch):
+def test_fast_client_priority_is_higher_than_background_and_other_clients_unchanged(monkeypatch):
+    monkeypatch.setattr(gateway, "LLM_CLIENTS", deepcopy(gateway.LLM_CLIENTS))
+    dossier = deepcopy(gateway.LLM_CLIENTS["dossier"])
+    dispatcher = deepcopy(gateway.LLM_CLIENTS["dispatcher"])
+    monster = deepcopy(gateway.LLM_CLIENTS["monster_llm"])
+
+    assert gateway.LLM_CLIENTS["address_detector_fast"]["priority"] < gateway.LLM_CLIENTS["address_detector_background"]["priority"]
+    assert gateway.LLM_CLIENTS["address_detector_fast"]["priority"] < dossier["priority"]
+    assert gateway.LLM_CLIENTS["dossier"] == dossier
+    assert gateway.LLM_CLIENTS["dispatcher"] == dispatcher
+    assert gateway.LLM_CLIENTS["monster_llm"] == monster
+
+
+def test_waiting_fast_ticket_is_claimed_before_background_ticket(monkeypatch):
     _install_gateway_db(monkeypatch)
-    monkeypatch.setattr(runtime_module, "request_params", lambda: {
-        "model": "test-qwen", "max_tokens": 64, "temperature": 0,
-        "response_format": {"type": "json_object"},
-    })
-    monkeypatch.setattr(runtime_module, "submit", lambda *_args, **_kwargs: (_ for _ in ()).throw(
-        gateway.LLMGatewayError("gateway unavailable", 503)
-    ))
-    signals = []
-    store = Store()
-    runtime = AddressDetectorRuntime(
-        _config(), Reactions(), store=store,
-        on_signal=lambda _context, result, _record: signals.append(result.verdict),
+    gateway.submit(
+        "address_detector_background", [{"role": "user", "content": "batch"}], {"model": "test", "max_tokens": 160},
+        idempotency_key="background-ticket",
     )
-    context = _context()
-    job = DetectorJob(message=SimpleNamespace(id=context.message_id), revision=1, context=context)
+    gateway.submit(
+        "address_detector_fast", [{"role": "user", "content": "fast"}], {"model": "test", "max_tokens": 64},
+        idempotency_key="fast-ticket",
+    )
 
-    async def scenario():
-        runtime._schedule_shadow(job, context)
-        production_result = AnalysisResult(
-            Verdict.UNCERTAIN, classifier_version="onnx", reason="production result",
-        )
-        await runtime._classified(job, production_result)
-        await asyncio.gather(*tuple(runtime._shadow_tasks))
-        return production_result
+    claimed = gateway.claim_next()
 
-    result = asyncio.run(scenario())
-
-    assert store.results == [result]
-    assert signals == [Verdict.UNCERTAIN]
-    assert runtime.status()["counters"]["qwen_shadow_failed"] == 1
+    assert claimed.client_id == "address_detector_fast"

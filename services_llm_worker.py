@@ -6,7 +6,7 @@ import logging
 import threading
 import time
 
-from services_llm_gateway import claim_next, finish, get_queue_snapshot, post_backend
+from services_llm_gateway import claim_next, finish, get_queue_snapshot, post_backend, set_wake_callback
 
 logger = logging.getLogger(__name__)
 TASK_ID = "ai_llm_worker"
@@ -25,14 +25,24 @@ class AILlmWorker:
 
     def start(self):
         with self._lock:
-            if self._thread and self._thread.is_alive(): return
+            if self._thread and self._thread.is_alive():
+                if not self._stop.is_set():
+                    set_wake_callback(self.wake)
+                    return
+                self._thread.join()
             self._stop.clear()
+            set_wake_callback(self.wake)
             self._thread = threading.Thread(target=self._loop, name="AILlmWorker", daemon=True)
             self._thread.start()
 
     def stop(self, timeout=8):
-        self._stop.set(); self._wake.set()
-        if self._thread: self._thread.join(timeout)
+        with self._lock:
+            set_wake_callback(None)
+            self._stop.set(); self._wake.set()
+            thread = self._thread
+            if thread: thread.join(timeout)
+            if thread and not thread.is_alive():
+                self._thread = None
         try:
             from services_ai_client import close_ai_client
             close_ai_client()

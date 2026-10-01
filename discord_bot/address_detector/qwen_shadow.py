@@ -16,6 +16,13 @@ BACKGROUND_CLIENT_ID = "address_detector_background"
 CLIENT_ID = FAST_CLIENT_ID
 MAX_TOKENS = 64
 SYSTEM_PROMPT = (
+    "Сначала определи характер употребления: прямое обращение автора или цитата, пересказ, чужая речь, "
+    "пример либо обсуждение языка/выражения (метаобсуждение). Для цитаты, пересказа и чужой речи используй "
+    "quoted_or_reported, для примера и метаобсуждения — example_or_metadiscussion; наличие конкретного "
+    "адресата для этих классов не требуется, и ambiguous не должен их перебивать. Если у сообщения есть "
+    "reply_to=i и сообщение с index i присутствует, его speaker — конкретный адресат; reply сам по себе "
+    "не означает фамильярность, оценивай форму и направленность текста. reason_code=no_specific_addressee "
+    "используй только для потенциального прямого обращения, когда нельзя установить адресата. "
     "Классифицируй только сообщения с index из classify_indexes. Остальные сообщения используй как контекст "
     "для определения автора, конкретного адресата и reply/mention-связей. Нарушение — фамильярное или "
     "неформальное обращение автора к конкретному собеседнику там, где ожидается уважительное обращение на Вы. "
@@ -215,6 +222,7 @@ class QwenSemanticAnalyzer:
                 classification=result["classification"],
                 reason_code=result["reason_code"],
                 ticket_id=metrics["ticket_id"],
+                idempotency_key=key,
                 queue_wait_ms=metrics["queue_wait_ms"],
                 backend_ms=metrics["backend_ms"],
                 total_ms=metrics["total_ms"],
@@ -229,7 +237,7 @@ class QwenSemanticAnalyzer:
                 stage = "backend_failure"
             else:
                 stage = "gateway_failure"
-            return AnalysisResult.failed(stage, classifier_version="qwen")
+            return AnalysisResult.failed(stage, classifier_version="qwen", idempotency_key=key)
 
 
 def parse_results(content: str, requested_indexes: list[int]) -> list[dict[str, Any]]:
@@ -269,7 +277,8 @@ def build_request_context(context: Any) -> dict[str, Any]:
     """Create minimal model input with relative labels and no Discord identifiers."""
     snapshots = list(getattr(context, "previous_messages", ()))
     reply = getattr(context, "reply", None)
-    if reply is not None and all(item.message_id != reply.message_id for item in snapshots):
+    if reply is not None:
+        snapshots = [item for item in snapshots if int(item.message_id) != int(reply.message_id)]
         snapshots.append(reply)
     snapshots.sort(key=lambda item: (
         getattr(item, "created_at", None) is None,
@@ -291,13 +300,27 @@ def build_request_context(context: Any) -> dict[str, Any]:
 
 
 def build_batch_context(records: list[dict[str, Any]], classify_message_ids: list[int]) -> dict[str, Any]:
-    requested = {int(message_id) for message_id in classify_message_ids}
-    targets = [row for row in records if int(row["id"]) in requested]
-    if len(targets) != len(requested) or len(targets) > 16:
+    requested_ids = [int(message_id) for message_id in classify_message_ids]
+    if len(set(requested_ids)) != len(requested_ids):
+        raise ValueError("classified message ids contain duplicates")
+    by_id = {int(row["id"]): dict(row) for row in records}
+    targets = [by_id[message_id] for message_id in requested_ids if message_id in by_id]
+    if len(targets) != len(requested_ids) or len(targets) > 16:
         raise ValueError("classified message is missing from context window")
-    context_rows = [row for row in records if int(row["id"]) not in requested]
+    requested = set(requested_ids)
+    context_rows = [row for message_id, row in by_id.items() if message_id not in requested]
     context_limit = 16 - len(targets)
-    kept_context = context_rows[-context_limit:] if context_limit else []
+    context_by_id = {int(row["id"]): row for row in context_rows}
+    reply_target_ids = list(dict.fromkeys(
+        int(row["reply_to"]) for row in targets
+        if row.get("reply_to") is not None and str(row["reply_to"]).isdigit()
+        and int(row["reply_to"]) in context_by_id
+    ))
+    pinned = [context_by_id[message_id] for message_id in reply_target_ids[:context_limit]]
+    pinned_ids = {int(row["id"]) for row in pinned}
+    remaining = [row for row in context_rows if int(row["id"]) not in pinned_ids]
+    remaining_limit = context_limit - len(pinned)
+    kept_context = pinned + (remaining[-remaining_limit:] if remaining_limit else [])
     records = sorted(kept_context + targets, key=lambda row: int(row["id"]))
     index_by_id = {int(row["id"]): index for index, row in enumerate(records)}
     labels: dict[str, str] = {}
@@ -336,7 +359,7 @@ def build_batch_context(records: list[dict[str, Any]], classify_message_ids: lis
         })
     return {
         "messages": messages,
-        "classify_indexes": [index_by_id[int(message_id)] for message_id in classify_message_ids],
+        "classify_indexes": [index_by_id[message_id] for message_id in requested_ids],
     }
 
 

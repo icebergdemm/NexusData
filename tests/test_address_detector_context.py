@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from discord_bot.address_detector.analyzer import RuleAnalyzer, Verdict
 from discord_bot.address_detector.context import ContextCollector
 from discord_bot.address_detector.filter import find_triggers
+from discord_bot.address_detector.persistence import _compact_context
+from discord_bot.address_detector.qwen_shadow import build_request_context
 
 
 class FakeChannel:
@@ -49,6 +51,93 @@ def test_context_collects_reply_mentions_and_previous_messages() -> None:
     assert context.mentions == ("2",)
     assert [row.message_id for row in context.previous_messages] == [9, 8]
     assert context.trigger_tokens == ("ты",)
+
+
+def test_resolved_reply_survives_context_collection_and_serializes_target_once() -> None:
+    target = message(100, "Что случилось?", author_id=2)
+    current = message(101, "А ты чё?", author_id=1, reply=target, previous=(target,))
+
+    context = asyncio.run(ContextCollector().collect(current, find_triggers(current.content)))
+    payload = build_request_context(context)
+
+    assert payload == {
+        "messages": [
+            {"index": 0, "speaker": "s1", "text": "Что случилось?", "reply_to": None, "mentions": []},
+            {"index": 1, "speaker": "s2", "text": "А ты чё?", "reply_to": 0, "mentions": []},
+        ],
+        "classify_indexes": [1],
+    }
+
+
+def test_unresolved_reply_is_fetched_before_context_serialization() -> None:
+    target = message(100, "Что случилось?", author_id=2)
+    current = message(101, "А ты чё?", author_id=1, previous=(target,))
+    current.reference = SimpleNamespace(message_id=target.id, resolved=None)
+
+    context = asyncio.run(ContextCollector().collect(current, find_triggers(current.content)))
+    payload = build_request_context(context)
+
+    assert context.reply is not None and context.reply.message_id == 100
+    assert payload["messages"][payload["classify_indexes"][0]]["reply_to"] == 0
+    assert sum(row["text"] == "Что случилось?" for row in payload["messages"]) == 1
+
+
+def test_failed_reply_fetch_does_not_invent_target_or_relation() -> None:
+    class MissingChannel:
+        async def fetch_message(self, _message_id):
+            raise LookupError("not available")
+
+        def history(self, *, limit, before):
+            async def rows():
+                if False:
+                    yield None
+            return rows()
+
+    current = message(101, "А ты чё?", author_id=1)
+    current.channel = MissingChannel()
+    current.reference = SimpleNamespace(message_id=100, resolved=None)
+
+    context = asyncio.run(ContextCollector().collect(current, find_triggers(current.content)))
+    payload = build_request_context(context)
+
+    assert context.reply is None
+    assert payload == {
+        "messages": [
+            {"index": 0, "speaker": "s1", "text": "А ты чё?", "reply_to": None, "mentions": []},
+        ],
+        "classify_indexes": [0],
+    }
+
+
+def test_compact_classifier_context_uses_relative_speakers_and_reply_relation() -> None:
+    replied = message(10, "Что ещё нужно?", author_id=2)
+    previous = [message(9, "Перед этим", author_id=4)]
+    current = message(11, "ты лог приложи", author_id=1, reply=replied, mentions=(2, 4), previous=previous)
+    context = asyncio.run(ContextCollector().collect(current, find_triggers(current.content)))
+
+    compact = _compact_context(context)
+
+    assert compact["current"] == {
+        "speaker": "s1", "text": "ты лог приложи", "reply_to": 1, "mentions": ["s2", "s3"],
+    }
+    assert compact["context"] == [
+        {"index": 1, "speaker": "s2", "text": "Что ещё нужно?"},
+        {"index": 2, "speaker": "s3", "text": "Перед этим"},
+    ]
+    assert "author_id" not in str(compact)
+    assert "display_name" not in str(compact)
+
+
+def test_compact_classifier_context_redacts_discord_identifiers_from_text() -> None:
+    content = "<@123456789012345678> ты смотри <@&223456789012345678> в <#323456789012345678>"
+    current = message(40, content, author_id=1, mentions=(123456789012345678,))
+    context = asyncio.run(ContextCollector().collect(current, find_triggers(content)))
+
+    compact = _compact_context(context)
+
+    assert compact["current"]["text"] == "<@s2> ты смотри <@role> в <#channel>"
+    assert compact["current"]["mentions"] == ["s2"]
+    assert "123456789012345678" not in str(compact)
 
 
 def test_rule_analyzer_prioritises_reply_and_mention() -> None:
