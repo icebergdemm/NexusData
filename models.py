@@ -682,6 +682,17 @@ class AddressDetectorSignal(Base):
     deleted_at = Column(DateTime, nullable=True)
 
 
+class AddressDetectorChannelState(Base):
+    """Small background-scan watermark and recoverable in-flight batch per channel."""
+
+    __tablename__ = "discord_address_detector_channel_state"
+
+    channel_id = Column(String(25), primary_key=True)
+    last_message_id = Column(String(25), nullable=True)
+    pending_batch = Column(JSON, nullable=True)
+    updated_at = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
+
+
 class DiscordAntiRaidLog(Base):
     """Anti-raid event log."""
     __tablename__ = "discord_antiraid_log"

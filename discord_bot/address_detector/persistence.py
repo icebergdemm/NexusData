@@ -6,7 +6,7 @@ import re
 from typing import Callable, Iterable
 
 from database import SessionLocal
-from models import AddressDetectorIncident, AddressDetectorSignal
+from models import AddressDetectorChannelState, AddressDetectorIncident, AddressDetectorSignal
 from sqlalchemy.exc import IntegrityError
 
 from .analyzer import AnalysisResult, Verdict
@@ -89,12 +89,7 @@ def _snapshot_json(context: AddressContext, revision: int = 1) -> dict:
     return {
         "current_revision": revision,
         "jump_url": context.jump_url,
-        "revisions": {
-            str(revision): {
-                "classifier_context": None,
-                "shadow": {"status": "not_submitted"},
-            }
-        },
+        "revisions": {str(revision): {"classifier_context": None}},
     }
 
 
@@ -153,7 +148,7 @@ class AddressDetectorStore:
             signal.matched_tokens = list(tokens)
             snapshot = dict(signal.context_snapshot or {})
             revisions = dict(snapshot.get("revisions") or {})
-            revisions[str(revision)] = {"classifier_context": None, "shadow": {"status": "not_submitted"}}
+            revisions[str(revision)] = {"classifier_context": None}
             signal.context_snapshot = {**snapshot, "current_revision": revision, "jump_url": context.jump_url, "revisions": revisions}
             signal.deleted_at = None
             signal.status_note = None
@@ -186,6 +181,23 @@ class AddressDetectorStore:
         finally:
             db.close()
 
+    def set_classifier_request(self, context: AddressContext, revision: int, payload: dict) -> bool:
+        db = self.session_factory()
+        try:
+            signal = db.query(AddressDetectorSignal).filter_by(message_id=str(context.message_id)).with_for_update().one_or_none()
+            if signal is None or signal.deleted_at is not None or _revision(signal.context_snapshot) != revision:
+                return False
+            snapshot = dict(signal.context_snapshot or {})
+            revisions = dict(snapshot.get("revisions") or {})
+            entry = dict(revisions.get(str(revision)) or {})
+            entry["classifier_context"] = payload
+            revisions[str(revision)] = entry
+            signal.context_snapshot = {**snapshot, "revisions": revisions}
+            db.commit()
+            return True
+        finally:
+            db.close()
+
     def mark_terminal(self, message_id: int, revision: int, status: str, note: str) -> bool:
         db = self.session_factory()
         try:
@@ -194,6 +206,13 @@ class AddressDetectorStore:
                 return False
             signal.processing_status = status[:32]
             signal.status_note = note[:500]
+            snapshot = dict(signal.context_snapshot or {})
+            revisions = dict(snapshot.get("revisions") or {})
+            entry = dict(revisions.get(str(revision)) or {})
+            if status in {"classification_failed", "queue_overflow", "stopping"}:
+                entry["semantic_analysis"] = {"status": status, "error": note[:120]}
+                revisions[str(revision)] = entry
+                signal.context_snapshot = {**snapshot, "revisions": revisions}
             db.commit()
             return True
         finally:
@@ -212,6 +231,22 @@ class AddressDetectorStore:
             signal.classifier_version = result.classifier_version
             signal.processing_status = "classified"
             signal.status_note = result.reason
+            snapshot = dict(signal.context_snapshot or {})
+            revisions = dict(snapshot.get("revisions") or {})
+            entry = dict(revisions.get(str(revision)) or {})
+            entry["semantic_analysis"] = {
+                "status": "completed",
+                "classification": result.classification,
+                "reason_code": result.reason_code,
+                "verdict": result.verdict.value,
+                "ticket_id": result.ticket_id,
+                "queue_wait_ms": result.queue_wait_ms,
+                "backend_ms": result.backend_ms,
+                "total_ms": result.total_ms,
+                "request_chars": result.request_chars,
+            }
+            revisions[str(revision)] = entry
+            signal.context_snapshot = {**snapshot, "revisions": revisions}
             if result.verdict is Verdict.CLEAN:
                 db.commit()
                 return AnalysisRecord(None, False, 0)
@@ -297,7 +332,7 @@ class AddressDetectorStore:
                 snapshot = dict(signal.context_snapshot or {})
                 revision = _revision(snapshot) + 1
                 revisions = dict(snapshot.get("revisions") or {})
-                revisions[str(revision)] = {"classifier_context": None, "shadow": {"status": "not_submitted"}}
+                revisions[str(revision)] = {"classifier_context": None}
                 signal.context_snapshot = {**snapshot, "current_revision": revision, "revisions": revisions}
                 if context is not None:
                     signal.author_display_name = context.author_display_name
@@ -355,6 +390,58 @@ class AddressDetectorStore:
                             **shadow,
                         })
             return pending
+        finally:
+            db.close()
+
+    def background_states(self) -> list[dict]:
+        db = self.session_factory()
+        try:
+            return [{
+                "channel_id": row.channel_id,
+                "last_message_id": row.last_message_id,
+                "pending_batch": row.pending_batch,
+            } for row in db.query(AddressDetectorChannelState).all()]
+        finally:
+            db.close()
+
+    def pending_candidates(self) -> list[dict]:
+        db = self.session_factory()
+        try:
+            return [{
+                "message_id": int(row.message_id),
+                "channel_id": int(row.channel_id),
+                "revision": _revision(row.context_snapshot),
+                "content": row.raw_content,
+                "tokens": list(row.matched_tokens or []),
+            } for row in db.query(AddressDetectorSignal).filter(
+                AddressDetectorSignal.deleted_at.is_(None),
+                AddressDetectorSignal.processing_status == "queued",
+            ).all()]
+        finally:
+            db.close()
+
+    def save_background_pending(self, channel_id: int, pending_batch: dict) -> None:
+        db = self.session_factory()
+        try:
+            row = db.query(AddressDetectorChannelState).filter_by(channel_id=str(channel_id)).with_for_update().one_or_none()
+            if row is None:
+                row = AddressDetectorChannelState(channel_id=str(channel_id))
+                db.add(row)
+            row.pending_batch = pending_batch
+            db.commit()
+        finally:
+            db.close()
+
+    def complete_background_batch(self, channel_id: int, last_message_id: int) -> None:
+        db = self.session_factory()
+        try:
+            row = db.query(AddressDetectorChannelState).filter_by(channel_id=str(channel_id)).with_for_update().one_or_none()
+            if row is None:
+                row = AddressDetectorChannelState(channel_id=str(channel_id))
+                db.add(row)
+            row.last_message_id = str(last_message_id)
+            row.pending_batch = None
+            db.commit()
         finally:
             db.close()
 

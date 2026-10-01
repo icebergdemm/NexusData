@@ -44,7 +44,7 @@ _BUILD_TIMEOUT = 900
 
 # Вместо токена в выводе консоли.
 _MASK = "***"
-_ADDRESS_DETECTOR_RUNTIME_MODULES = ("numpy", "onnxruntime", "tokenizers")
+_SHARED_ONNX_RUNTIME_MODULES = ("numpy", "onnxruntime")
 
 
 def _redact(text: str) -> str:
@@ -125,13 +125,9 @@ def _install_runtime_requirements(emit: Callable[[str], None], path: str) -> boo
     return True
 
 
-def _missing_address_detector_modules() -> list[str]:
-    """Return optional detector modules absent from the running Python env."""
-    return [
-        module
-        for module in _ADDRESS_DETECTOR_RUNTIME_MODULES
-        if importlib.util.find_spec(module) is None
-    ]
+def _missing_shared_onnx_modules() -> list[str]:
+    """Keep dependencies used by voice profiles available; detector no longer uses ONNX."""
+    return [module for module in _SHARED_ONNX_RUNTIME_MODULES if importlib.util.find_spec(module) is None]
 
 
 # ── Доступ к приватному репозиторию ──────────────────────────────────────────
@@ -650,10 +646,10 @@ def _finish(
     dependencies_ok = True
     frontend_ok = True
 
-    missing_modules = _missing_address_detector_modules()
+    missing_modules = _missing_shared_onnx_modules()
     if requirements_touched or missing_modules:
         if missing_modules:
-            emit(f"! Не найдены runtime-модули detector: {', '.join(missing_modules)}")
+            emit(f"! Не найдены runtime-модули voice profiles: {', '.join(missing_modules)}")
         dependencies_ok = _install_runtime_requirements(emit, path)
 
     if frontend_touched and settings.git_update_build_frontend:

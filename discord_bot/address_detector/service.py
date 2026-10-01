@@ -26,6 +26,7 @@ class DetectorJob:
     revision: int = 1
     candidate_context: AddressContext | None = None
     context: AddressContext | None = None
+    is_edit: bool = False
 
     @property
     def message_id(self) -> int:
@@ -90,21 +91,20 @@ class AddressDetectorService:
     async def submit(
         self, message: object, match: TriggerMatch | None = None, *, marker_added: bool = False,
         revision: int = 1, candidate_context: AddressContext | None = None,
+        is_edit: bool = False,
     ) -> SubmitResult:
         """Add the marker first, then enqueue. False means the queue rejected it."""
 
         if self._stopping:
-            await self._remove_reaction(message)
             return SubmitResult(False, "stopping")
         if not marker_added:
             await self.add_marker(message)
 
         try:
-            self.queue.put_nowait(DetectorJob(message, match, revision, candidate_context))
+            self.queue.put_nowait(DetectorJob(message, match, revision, candidate_context, is_edit=is_edit))
         except asyncio.QueueFull:
             logger.error("address_detector queue_overflow")
             self._event("queue_overflow", "очередь заполнена")
-            await self._remove_reaction(message)
             return SubmitResult(False, "queue_overflow")
         return SubmitResult(True)
 
@@ -139,6 +139,8 @@ class AddressDetectorService:
                     accepted = callback_result is not False
                 if not accepted:
                     continue
+                if result.operational_failure:
+                    continue
                 if result.verdict is Verdict.CLEAN:
                     await self._remove_reaction(job.message)
                 else:
@@ -147,7 +149,7 @@ class AddressDetectorService:
                         await callback_result
             except Exception:
                 logger.exception("address_detector worker_error")
-                await self._remove_reaction(getattr(job, "message", None)) if job is not None else None
+                # Only a validated CLEAN result may remove the marker.
             finally:
                 self.queue.task_done()
 
@@ -158,11 +160,11 @@ class AddressDetectorService:
         except asyncio.TimeoutError:
             logger.warning("address_detector analysis_timeout")
             self._event("analysis_timeout", "analysis timeout")
-            return AnalysisResult.uncertain("analysis timeout")
+            return AnalysisResult.failed("analysis_timeout")
         except Exception:
             logger.exception("address_detector analysis_error")
             self._event("analysis_error", "analysis error")
-            return AnalysisResult.uncertain("analysis error")
+            return AnalysisResult.failed("analysis_error")
 
     async def _remove_reaction(self, message: object) -> None:
         if message is None:

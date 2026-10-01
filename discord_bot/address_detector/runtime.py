@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import logging
@@ -10,15 +11,15 @@ from collections import Counter, defaultdict, deque
 from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
-from .analyzer import AnalysisResult, Analyzer, RuleAnalyzer, Verdict
+from .analyzer import AnalysisResult, Analyzer, Verdict
+from .background import AddressDetectorBackgroundScanner
 from .config import DetectorConfig
 from .context import AddressContext, ContextCollector
 from .filter import TriggerMatch, find_triggers
 from .persistence import AddressDetectorStore, AnalysisRecord
 from .qwen_shadow import (
-    CLIENT_ID, LLMGatewayError, cancel, configure_limits, find_ticket,
-    idempotency_key, parse_content, poll, request_messages, request_params,
-    response_content, shadow_verdict, submit,
+    BACKGROUND_CLIENT_ID, FAST_CLIENT_ID, QwenSemanticAnalyzer, build_batch_context,
+    configure_limits, verdict_for,
 )
 from .scope import in_scope
 from .service import AddressDetectorService, DetectorJob, ReactionPort
@@ -29,18 +30,16 @@ logger = logging.getLogger("NexusBot.address_detector")
 class ContextAnalyzer:
     def __init__(
         self, collector: ContextCollector, analyzer: Analyzer, store: AddressDetectorStore,
-        on_context: Callable[[DetectorJob, AddressContext], None] | None = None,
         on_event: Callable[[str, str | None], None] | None = None,
     ) -> None:
         self.collector = collector
         self.analyzer = analyzer
         self.store = store
-        self.on_context = on_context
         self.on_event = on_event
 
     async def analyze(self, job: DetectorJob) -> AnalysisResult:
         if job.match is None or job.candidate_context is None:
-            return AnalysisResult.uncertain("missing trigger snapshot")
+            return AnalysisResult.failed("missing_trigger_snapshot", classifier_version="qwen")
         context = await self.collector.collect(job.message, job.match, job.candidate_context)
         job.context = context
         try:
@@ -56,8 +55,22 @@ class ContextAnalyzer:
             current = saved
         if not current:
             return AnalysisResult.uncertain("stale candidate revision")
-        if saved and self.on_context:
-            self.on_context(job, context)
+        analyze_job = getattr(self.analyzer, "analyze_job", None)
+        if analyze_job is not None:
+            from .qwen_shadow import build_request_context
+            payload = build_request_context(context)
+            try:
+                save_request = getattr(self.store, "set_classifier_request", None)
+                if save_request:
+                    saved = await asyncio.to_thread(save_request, context, job.revision, payload)
+                else:
+                    saved = await asyncio.to_thread(self.store.set_classifier_context, context, job.revision)
+            except Exception:
+                logger.exception("address_detector classifier_request_write_failed message_id=%s", job.message_id)
+                return AnalysisResult.failed("audit_write_failed", classifier_version="qwen")
+            if not saved:
+                return AnalysisResult.failed("stale_revision", classifier_version="qwen")
+            return await analyze_job(job, context, payload)
         return await self.analyzer.analyze(context)
 
 
@@ -79,23 +92,26 @@ class AddressDetectorRuntime:
         on_signal: SignalHandler | None = None,
         on_edit_clean: EditCleanHandler | None = None,
         on_delete: DeleteHandler | None = None,
+        resolve_message: Callable[[int, int], Awaitable[object | None]] | None = None,
+        load_recent: Callable[[int, int, int], Awaitable[list[object]]] | None = None,
     ) -> None:
         self.config = config
         self.store = store or AddressDetectorStore()
         self.on_signal = on_signal
         self.on_edit_clean = on_edit_clean
         self.on_delete = on_delete
+        self.resolve_message = resolve_message
+        self.load_recent = load_recent
         self.metrics: Counter[str] = Counter()
         self.event_counts: Counter[str] = Counter()
         self.events: deque[dict[str, object]] = deque(maxlen=80)
         self._classification_lock = asyncio.Lock()
         self._rates: dict[str, deque[float]] = defaultdict(deque)
         self._durations: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=512))
-        self._shadow_tasks: set[asyncio.Task] = set()
-        self._last_shadow_error: str | None = None
+        self._message_revisions: dict[int, int] = {}
+        self._deleted_message_ids: set[int] = set()
         self.context_analyzer = ContextAnalyzer(
-            ContextCollector(config.context_messages), analyzer or RuleAnalyzer(), self.store,
-            self._schedule_shadow if config.llm_shadow_enabled else None,
+            ContextCollector(config.context_messages), analyzer or QwenSemanticAnalyzer(config), self.store,
             self._event,
         )
         self.service = AddressDetectorService(
@@ -108,86 +124,91 @@ class AddressDetectorRuntime:
             on_event=self._event,
             on_result=self._classified,
         )
+        self.background = AddressDetectorBackgroundScanner(
+            config, self.store, self._background_batch, self._event, on_metric=self._count,
+            load_recent=load_recent,
+        )
 
     async def start(self) -> None:
-        if self.config.enabled and self.config.monitored_channel_ids:
+        if self.config.enabled and self.config.llm_enabled and self.config.monitored_channel_ids:
             await self.service.start()
-            if self.config.llm_shadow_enabled:
-                configure_limits(self.config.llm_quota_min, self.config.llm_queue_limit)
-            try:
-                pending_rows = await asyncio.to_thread(self.store.pending_shadow)
-            except Exception:
-                logger.exception("address_detector shadow_recovery_scan_failed")
-                self._event("qwen_shadow_recovery_failed", "pending request scan failed")
-                return
-            for pending in pending_rows:
-                self._track_shadow(self._resume_shadow(pending, allow_submit=self.config.llm_shadow_enabled))
+            if self.config.llm_enabled:
+                configure_limits(FAST_CLIENT_ID, self.config.llm_fast_quota_min, self.config.llm_fast_queue_limit)
+                configure_limits(BACKGROUND_CLIENT_ID, self.config.llm_background_quota_min, self.config.llm_background_queue_limit)
+                await self._recover_fast_candidates()
+            if self.config.llm_background_enabled:
+                await self.background.start()
 
     async def stop(self) -> None:
+        await self.background.stop()
         await self.service.stop()
-        for task in tuple(self._shadow_tasks):
-            task.cancel()
-        if self._shadow_tasks:
-            await asyncio.gather(*self._shadow_tasks, return_exceptions=True)
-        self._shadow_tasks.clear()
 
     async def handle_message(self, message: object) -> bool:
-        if not self.config.enabled or not in_scope(message, self.config.scope):
+        if not self.config.enabled or not self.config.llm_enabled or not in_scope(message, self.config.scope):
             return False
         self._count("scoped_messages")
         match = find_triggers(getattr(message, "content", ""))
         if not match.tokens:
+            if self.config.llm_background_enabled:
+                self._message_revisions.setdefault(int(getattr(message, "id")), 1)
+                await self.background.observe(message)
             return False
+        self._message_revisions.setdefault(int(getattr(message, "id")), 1)
         self._count("trigger_candidates", rate=True)
         self._event("candidate_detected", f"signals={','.join(match.tokens)}")
         context = self._candidate_context(message, match)
         await self.service.add_marker(message)
         accepted = await asyncio.to_thread(self.store.upsert_candidate, context, match.tokens)
         if not accepted:
+            self._message_revisions.pop(context.message_id, None)
             await self.service.remove_marker(message)
             return False
         submission = await self.service.submit(message, match, marker_added=True, revision=1, candidate_context=context)
         enqueued = bool(submission)
+        if enqueued:
+            self._count("fast_llm_requests", rate=True)
         if not enqueued:
             status = submission.reason or "queue_rejected"
             await asyncio.to_thread(self.store.mark_terminal, context.message_id, 1, status, status)
+            self._message_revisions.pop(context.message_id, None)
             if status != "queue_overflow":
                 self._count("candidate_queue_rejected")
         return enqueued
 
     async def handle_edit(self, message: object) -> bool:
         message_id = int(getattr(message, "id"))
-        if not self.config.enabled or not in_scope(message, self.config.scope):
+        if not self.config.enabled or not self.config.llm_enabled or not in_scope(message, self.config.scope):
             return False
+        self._message_revisions[int(getattr(message, "id"))] = self._message_revisions.get(int(getattr(message, "id")), 1) + 1
         match = find_triggers(getattr(message, "content", ""))
         context = self._candidate_context(message, match)
-        if not match.tokens:
-            async with self._classification_lock:
-                edited = await asyncio.to_thread(self.store.mark_edit_clean, message_id, context)
-                if edited:
-                    self._count("edited_candidates")
-                await self.service.remove_marker(message)
-                if self.on_edit_clean:
-                    result = self.on_edit_clean(message_id)
-                    if inspect.isawaitable(result):
-                        await result
+        signal = await asyncio.to_thread(self.store.get_signal, message_id) if hasattr(self.store, "get_signal") else None
+        if not match.tokens and signal is None:
+            if self.config.llm_background_enabled:
+                await self.background.observe(message, force=True)
             return False
         async with self._classification_lock:
             revision = await asyncio.to_thread(self.store.update_candidate, context, match.tokens)
             self._count("edited_candidates")
         await self.service.add_marker(message)
         submission = await self.service.submit(
-            message, match, marker_added=True, revision=revision, candidate_context=context
+            message, match, marker_added=True, revision=revision, candidate_context=context, is_edit=True
         )
         enqueued = bool(submission)
+        if enqueued:
+            self._count("fast_llm_requests", rate=True)
         if not enqueued:
             status = submission.reason or "queue_rejected"
             await asyncio.to_thread(self.store.mark_terminal, message_id, revision, status, status)
+            self._message_revisions.pop(message_id, None)
             if status != "queue_overflow":
                 self._count("candidate_queue_rejected")
         return enqueued
 
     async def handle_delete(self, message_id: int) -> None:
+        if int(message_id) in self._message_revisions:
+            self._deleted_message_ids.add(int(message_id))
+            self._message_revisions[int(message_id)] += 1
         async with self._classification_lock:
             deleted = await asyncio.to_thread(self.store.mark_deleted, message_id)
             if deleted:
@@ -200,11 +221,65 @@ class AddressDetectorRuntime:
     async def join(self) -> None:
         await self.service.join()
 
+    async def _recover_fast_candidates(self) -> None:
+        if self.resolve_message is None or not hasattr(self.store, "pending_candidates"):
+            return
+        for pending in await asyncio.to_thread(self.store.pending_candidates):
+            channel_id = pending["channel_id"]
+            message_id = pending["message_id"]
+            if channel_id not in self.config.scope.monitored_channel_ids or channel_id in self.config.scope.excluded_channel_ids:
+                await asyncio.to_thread(self.store.mark_terminal, message_id, pending["revision"], "out_of_scope", "channel is no longer monitored")
+                continue
+            message = await self.resolve_message(channel_id, message_id)
+            if message is None:
+                await asyncio.to_thread(self.store.mark_deleted, message_id)
+                self._count("deleted_candidates")
+                continue
+            match = find_triggers(getattr(message, "content", ""))
+            context = self._candidate_context(message, match)
+            revision = pending["revision"]
+            if context.raw_content != pending["content"]:
+                revision = await asyncio.to_thread(self.store.update_candidate, context, match.tokens)
+                self._count("edited_candidates")
+            self._message_revisions[message_id] = revision
+            await self.service.add_marker(message)
+            submission = await self.service.submit(
+                message, match, marker_added=True, revision=revision, candidate_context=context,
+            )
+            if submission:
+                self._count("recovered_candidates")
+                self._count("fast_llm_requests", rate=True)
+            else:
+                status = submission.reason or "queue_rejected"
+                await asyncio.to_thread(self.store.mark_terminal, message_id, revision, status, status)
+
     async def _classified(self, job: DetectorJob, result: AnalysisResult) -> bool:
         context = job.context or job.candidate_context
         if context is None:
             context = self._candidate_context(job.message, job.match or find_triggers(getattr(job.message, "content", "")))
         async with self._classification_lock:
+            if result.operational_failure:
+                try:
+                    saved = await asyncio.to_thread(
+                        self.store.mark_terminal, job.message_id, job.revision,
+                        "classification_failed", result.reason or "Qwen classification failed",
+                    )
+                except Exception:
+                    logger.exception("address_detector classification_failure_persist_failed message_id=%s", job.message_id)
+                    saved = False
+                if not saved:
+                    self._count("stale_result_ignored")
+                    return False
+                self._count("qwen_failed")
+                failure_metric = {
+                    "timeout": "qwen_timeout",
+                    "invalid_response": "qwen_invalid_response",
+                    "backend_failure": "qwen_backend_failure",
+                }.get(result.reason, "qwen_gateway_failure")
+                self._count(failure_metric)
+                self._message_revisions.pop(job.message_id, None)
+                self._event("classification_failed", result.reason)
+                return True
             try:
                 record = await asyncio.to_thread(
                     self.store.record_analysis,
@@ -226,31 +301,24 @@ class AddressDetectorRuntime:
                 self._event("stale_result_ignored", f"message_id={job.message_id} revision={job.revision}")
                 return False
 
+            self._message_revisions.pop(job.message_id, None)
+            self._deleted_message_ids.discard(job.message_id)
+
             counter = {
                 Verdict.CLEAN: "analysis_clean",
                 Verdict.UNCERTAIN: "analysis_uncertain",
                 Verdict.LIKELY_VIOLATION: "analysis_likely",
             }[result.verdict]
             self._count(counter)
-            verdict_metric = {
-                Verdict.CLEAN: "clean",
-                Verdict.UNCERTAIN: "uncertain",
-                Verdict.LIKELY_VIOLATION: "likely",
-            }[result.verdict]
-            if result.classifier_version == "rules":
-                self._count(f"rules_{verdict_metric}")
-            else:
-                self._count("rules_uncertain")
-                self._count("onnx_requests")
-                self._count(f"onnx_{verdict_metric}")
-            detail_parts = [f"classifier={result.classifier_version}"]
-            if result.confidence is not None:
-                detail_parts.append(f"confidence={result.confidence:.2f}")
-            if result.matched_signals:
-                detail_parts.append(f"signals={','.join(result.matched_signals)}")
-            if result.reason:
-                detail_parts.append(f"reason={result.reason}")
-            self._event(counter, " ".join(detail_parts))
+            if result.classification:
+                self._count(f"classification_{result.classification}")
+            if result.queue_wait_ms is not None:
+                self._observe("fast_queue_wait_ms", result.queue_wait_ms)
+            if result.backend_ms is not None:
+                self._observe("backend_latency_ms", result.backend_ms)
+            if result.total_ms is not None:
+                self._observe("fast_total_latency_ms", result.total_ms)
+            self._event(counter, f"classifier=qwen reason_code={result.reason_code or '-'}")
             if result.verdict is not Verdict.CLEAN and self.on_signal:
                 callback_result = self.on_signal(context, result, record)
                 if inspect.isawaitable(callback_result):
@@ -259,6 +327,10 @@ class AddressDetectorRuntime:
                     "signal_sent" if record.should_ping_moderators else "signal_aggregated",
                     f"incident_messages={record.message_count}",
                 )
+            elif result.verdict is Verdict.CLEAN and getattr(job, "is_edit", False) and self.on_edit_clean:
+                callback_result = self.on_edit_clean(job.message_id)
+                if inspect.isawaitable(callback_result):
+                    await callback_result
             return True
 
     def status(self) -> dict:
@@ -270,187 +342,174 @@ class AddressDetectorRuntime:
             "counters": {**dict(self.metrics), "candidate_queue_depth": self.service.queue.qsize()},
             "events": list(self.events),
             "candidate_queue_depth": self.service.queue.qsize(),
-            "shadow_enabled": self.config.llm_shadow_enabled,
-            "shadow_in_flight": sum(not task.done() for task in self._shadow_tasks),
-            "candidates_per_minute": len(self._rates["trigger_candidates"]),
-            "qwen_requests_per_minute": len(self._rates["qwen_shadow_submitted"]),
-            "qwen_shadow_queue_wait_ms": self._duration_summary("qwen_shadow_queue_wait_ms"),
-            "qwen_shadow_backend_ms": self._duration_summary("qwen_shadow_backend_ms"),
-            "last_shadow_error": self._last_shadow_error,
+            "llm_enabled": self.config.llm_enabled,
+            "llm_background_enabled": self.config.llm_background_enabled,
+            "fast_candidates_per_minute": len(self._rates["trigger_candidates"]),
+            "fast_llm_requests_per_minute": len(self._rates["fast_llm_requests"]),
+            "background_messages_per_minute": len(self._rates["background_messages"]),
+            "background_batches_per_minute": len(self._rates["background_batches"]),
+            "background_requests_per_minute": len(self._rates["background_llm_requests"]),
+            "fast_queue_wait_ms": self._duration_summary("fast_queue_wait_ms"),
+            "fast_total_latency_ms": self._duration_summary("fast_total_latency_ms"),
+            "background_queue_wait_ms": self._duration_summary("background_queue_wait_ms"),
+            "background_messages_per_batch": self._duration_summary("background_messages_per_batch"),
+            "backend_latency_ms": self._duration_summary("backend_latency_ms"),
+            "background_queue_depth": self.background.status()["queue_depth"],
+            "background_in_flight": self.background.status()["in_flight"],
+            "last_classifier_error": next((item.get("detail") for item in reversed(self.events) if "failed" in str(item.get("event")) or "timeout" in str(item.get("event"))), None),
         }
 
-    def _schedule_shadow(self, job: DetectorJob, context: AddressContext) -> None:
-        if not self.config.llm_shadow_enabled:
+    async def _background_batch(self, channel_id: int, messages: list[object], pending: dict | None) -> None:
+        analyzer = self.context_analyzer.analyzer
+        if pending is None:
+            if not messages:
+                return
+            payload, items = await self._background_payload(messages)
+            if not items:
+                return
+            identity = ":".join(
+                f"{item['message_id']}:{hashlib.sha256(item['content'].encode()).hexdigest()[:12]}"
+                for item in items
+            )
+            key = f"address_detector_background:{channel_id}:{hashlib.sha256(identity.encode()).hexdigest()[:32]}"
+            pending = {
+                "key": key,
+                "last_message_id": max(int(item["message_id"]) for item in items),
+                "payload": payload,
+                "items": items,
+            }
+            await asyncio.to_thread(self.store.save_background_pending, channel_id, pending)
+        payload = pending["payload"]
+        self._count("background_llm_requests", rate=True)
+        try:
+            results, timing = await analyzer.classify_batch(payload, pending["key"], client_id=BACKGROUND_CLIENT_ID)
+        except Exception as exc:
+            name = "qwen_invalid_response" if isinstance(exc, ValueError) else "qwen_background_timeout" if isinstance(exc, TimeoutError) else "qwen_background_failure"
+            self._count(name)
+            self._event("background_classification_failed", name)
+            for item in pending["items"]:
+                message_id = int(item["message_id"])
+                self._message_revisions.pop(message_id, None)
+                self._deleted_message_ids.discard(message_id)
             return
-        value = self.store_context(context)
-        self._track_shadow(self._run_shadow(job.message_id, job.revision, value))
+        self._observe("background_queue_wait_ms", timing["queue_wait_ms"])
+        self._observe("backend_latency_ms", timing["backend_ms"])
+        self._observe("background_total_latency_ms", timing["total_ms"])
+        self._observe("background_messages_per_batch", len(pending["items"]))
+        by_index = {int(item["index"]): item for item in pending["items"]}
+        live_messages = {int(getattr(message, "id")): message for message in messages}
+        for result in results:
+            item = by_index[result["index"]]
+            message = live_messages.get(int(item["message_id"]))
+            if message is None and self.resolve_message:
+                message = await self.resolve_message(channel_id, int(item["message_id"]))
+            await self._apply_background_result(message, item, result, payload, timing)
+        for item in pending["items"]:
+            message_id = int(item["message_id"])
+            self._message_revisions.pop(message_id, None)
+            self._deleted_message_ids.discard(message_id)
 
-    @staticmethod
-    def store_context(context: AddressContext) -> dict:
-        from .persistence import _compact_context
-        return _compact_context(context)
+    async def _background_payload(self, messages: list[object]) -> tuple[dict, list[dict]]:
+        from .qwen_shadow import build_batch_context
 
-    def _track_shadow(self, coroutine) -> None:
-        task = asyncio.create_task(coroutine, name="address-detector-qwen-shadow")
-        self._shadow_tasks.add(task)
-        task.add_done_callback(self._shadow_tasks.discard)
+        messages = sorted(messages, key=lambda item: int(getattr(item, "id", 0)))
+        channel = getattr(messages[0], "channel", None)
+        records: dict[int, dict] = {}
 
-    async def _resume_shadow(self, pending: dict, *, allow_submit: bool) -> None:
-        if not await asyncio.to_thread(self.store.is_current, pending["message_id"], pending["revision"]):
-            ticket_id = pending.get("ticket_id")
-            if not ticket_id and pending.get("idempotency_key"):
+        def add(message: object) -> None:
+            message_id = int(getattr(message, "id", 0))
+            author = getattr(message, "author", None)
+            reference = getattr(message, "reference", None)
+            records[message_id] = {
+                "id": message_id,
+                "author_id": getattr(author, "id", None),
+                "text": str(getattr(message, "content", "")),
+                "reply_to": getattr(reference, "message_id", None),
+                "mentions": [str(getattr(item, "id", "")) for item in getattr(message, "mentions", ())],
+                "created_at": getattr(message, "created_at", None),
+            }
+
+        for message in messages:
+            add(message)
+            reference = getattr(message, "reference", None)
+            replied = getattr(reference, "resolved", None) if reference is not None else None
+            if replied is None and reference is not None and getattr(reference, "message_id", None) is not None:
                 try:
-                    ticket_id = await asyncio.to_thread(find_ticket, CLIENT_ID, pending["idempotency_key"])
+                    replied = await channel.fetch_message(reference.message_id)
                 except Exception:
-                    logger.exception("address_detector shadow_recovery_lookup_failed")
-            if ticket_id:
-                try:
-                    await asyncio.to_thread(cancel, int(ticket_id))
-                except Exception:
-                    logger.exception("address_detector shadow_stale_cancel_failed")
+                    replied = None
+            if replied is not None:
+                add(replied)
+
+        try:
+            async for old in channel.history(limit=self.config.context_messages, before=messages[0]):
+                add(old)
+        except Exception:
+            pass
+        history = sorted(records.values(), key=lambda row: (row["created_at"] is None, row["created_at"] or 0, row["id"]))[-16:]
+        classify_ids = [int(getattr(message, "id")) for message in messages]
+        payload = build_batch_context(history, classify_ids)
+        indexes = dict(zip(classify_ids, payload["classify_indexes"]))
+        items = []
+        for message in messages:
+            message_id = int(getattr(message, "id"))
+            content = str(getattr(message, "content", ""))
+            items.append({
+                "message_id": message_id,
+                "index": indexes[message_id],
+                "content": content,
+                "revision": self._message_revisions.get(message_id, 1),
+                "created_at": getattr(message, "created_at", None).isoformat() if getattr(message, "created_at", None) else None,
+                "jump_url": getattr(message, "jump_url", None),
+            })
+        return payload, items
+
+    async def _apply_background_result(self, message: object | None, item: dict, result: dict, payload: dict, timing: dict) -> None:
+        message_id = int(item["message_id"])
+        if message is None or message_id in self._deleted_message_ids:
+            self._count("deleted_candidates")
+            return
+        if self._message_revisions.get(message_id, item["revision"]) != item["revision"] or str(getattr(message, "content", "")) != item["content"]:
             self._count("stale_result_ignored")
             return
-        context = pending.get("context")
-        if context:
-            await self._run_shadow(pending["message_id"], pending["revision"], context, pending, allow_submit=allow_submit)
-
-    async def _run_shadow(
-        self, message_id: int, revision: int, context: dict, previous: dict | None = None,
-        *, allow_submit: bool = True,
-    ) -> None:
-        key = idempotency_key(message_id, revision)
-        submitted_at = (previous or {}).get("submitted_at") or datetime.now(timezone.utc).isoformat()
-        state = {"status": "submitting", "idempotency_key": key, "submitted_at": submitted_at}
-        try:
-            params = request_params()
-            state["model"] = (previous or {}).get("model") or params.get("model")
-            if not await asyncio.to_thread(self.store.set_shadow, message_id, revision, state):
+        classification = result["classification"]
+        reason_code = result["reason_code"]
+        self._count(f"classification_{classification}")
+        if classification not in {"direct_familiar_address", "ambiguous"}:
+            return
+        match = find_triggers(item["content"])
+        base = self._candidate_context(message, match)
+        context = await self.context_analyzer.collector.collect(message, match, base)
+        await self.service.add_marker(message)
+        signal = await asyncio.to_thread(self.store.get_signal, message_id)
+        if signal is None:
+            accepted = await asyncio.to_thread(self.store.upsert_candidate, context, match.tokens)
+            if not accepted:
                 self._count("stale_result_ignored")
                 return
-            ticket_id = int((previous or {}).get("ticket_id") or 0)
-            if not ticket_id:
-                ticket_id = await asyncio.to_thread(find_ticket, CLIENT_ID, key) or 0
-            if not ticket_id:
-                if not allow_submit:
-                    state.update({"status": "disabled", "error": "shadow disabled before gateway ticket creation"})
-                    await asyncio.to_thread(self.store.set_shadow, message_id, revision, state)
-                    return
-                ticket_id = await asyncio.to_thread(
-                    submit, CLIENT_ID, request_messages(context), params,
-                    idempotency_key=key, timeout=float(self.config.llm_backend_timeout_seconds),
-                )
-            if not (previous or {}).get("submitted_counted"):
-                self._count("qwen_shadow_submitted", rate=True)
-            state.update({"status": "queued", "ticket_id": ticket_id, "submitted_counted": True})
-            await asyncio.to_thread(self.store.set_shadow, message_id, revision, state)
-            age_start = _parse_time(submitted_at)
-            elapsed_age = max(0.0, (datetime.now(timezone.utc) - age_start).total_seconds())
-            deadline = time.monotonic() + max(0.0, self.config.llm_max_request_age_seconds - elapsed_age)
-            while True:
-                if not await asyncio.to_thread(self.store.is_current, message_id, revision):
-                    await asyncio.to_thread(cancel, ticket_id)
-                    self._count("stale_result_ignored")
-                    return
-                if time.monotonic() >= deadline:
-                    await asyncio.to_thread(cancel, ticket_id)
-                    self._count("qwen_shadow_timeout")
-                    state.update({"status": "timeout", "ticket_id": ticket_id, "error": "maximum request age exceeded"})
-                    await asyncio.to_thread(self.store.set_shadow, message_id, revision, state)
-                    self._event("qwen_shadow_timeout", state["error"])
-                    return
-                ticket = await asyncio.to_thread(poll, ticket_id)
-                queue_wait_ms = ticket.get("queue_wait_ms")
-                if ticket["status"] == "running":
-                    state["status"] = "running"
-                    await asyncio.to_thread(self.store.set_shadow, message_id, revision, state)
-                if ticket["status"] in {"succeeded", "failed", "cancelled"}:
-                    queue_wait = ticket.get("queue_wait_ms")
-                    backend_ms = ticket.get("backend_ms")
-                    elapsed_ms = queue_wait + backend_ms if queue_wait is not None and backend_ms is not None else None
-                    expired = (
-                        elapsed_ms >= self.config.llm_max_request_age_seconds * 1000
-                        if elapsed_ms is not None else time.monotonic() >= deadline
-                    )
-                    if expired:
-                        self._count("qwen_shadow_timeout")
-                        state.update({"status": "timeout", "ticket_id": ticket_id, "error": "maximum request age exceeded"})
-                        await asyncio.to_thread(self.store.set_shadow, message_id, revision, state)
-                        self._event("qwen_shadow_timeout", state["error"])
-                        return
-                    break
-                age_expired = time.monotonic() >= deadline
-                queue_expired = ticket["status"] == "queued" and queue_wait_ms is not None and queue_wait_ms >= self.config.llm_queue_wait_timeout_seconds * 1000
-                if age_expired or queue_expired:
-                    if queue_wait_ms is not None:
-                        self._observe("qwen_shadow_queue_wait_ms", float(queue_wait_ms))
-                    if ticket.get("backend_ms") is not None:
-                        self._observe("qwen_shadow_backend_ms", float(ticket["backend_ms"]))
-                    await asyncio.to_thread(cancel, ticket_id)
-                    self._count("qwen_shadow_timeout")
-                    state.update({"status": "timeout", "ticket_id": ticket_id, "error": "request age limit" if age_expired else "queue wait limit"})
-                    await asyncio.to_thread(self.store.set_shadow, message_id, revision, state)
-                    self._event("qwen_shadow_timeout", state["error"])
-                    return
-                await asyncio.sleep(0.5)
+            revision = 1
+        else:
+            revision = await asyncio.to_thread(self.store.update_candidate, context, match.tokens)
+        await asyncio.to_thread(self.store.set_classifier_request, context, revision, payload)
+        result_obj = AnalysisResult(
+            verdict=verdict_for(classification),
+            reason=reason_code,
+            classifier_version="qwen",
+            matched_signals=(reason_code,),
+            classification=classification,
+            reason_code=reason_code,
+            ticket_id=timing["ticket_id"],
+            queue_wait_ms=timing["queue_wait_ms"],
+            backend_ms=timing["backend_ms"],
+            total_ms=timing["total_ms"],
+            request_chars=len(json.dumps(payload, ensure_ascii=False, separators=(",", ":"))),
+        )
+        await self._classified(DetectorJob(message, match, revision, context, context), result_obj)
 
-            if queue_wait_ms is not None:
-                self._observe("qwen_shadow_queue_wait_ms", float(queue_wait_ms))
-            backend_ms = ticket.get("backend_ms")
-            if backend_ms is not None:
-                self._observe("qwen_shadow_backend_ms", float(backend_ms))
-            if ticket["status"] != "succeeded":
-                backend_error = str(ticket.get("error") or ticket["status"])
-                timed_out = "timeout" in backend_error.lower() or "timed out" in backend_error.lower()
-                counter = "qwen_shadow_timeout" if timed_out else "qwen_shadow_failed"
-                error = "backend timeout" if timed_out else "gateway request cancelled" if ticket["status"] == "cancelled" else "backend request failed"
-                self._count(counter)
-                self._last_shadow_error = error
-                state.update({"status": "timeout" if timed_out else "failed", "ticket_id": ticket_id, "error": error})
-                await asyncio.to_thread(self.store.set_shadow, message_id, revision, state)
-                self._event(counter, error)
-                return
-            try:
-                parsed = parse_content(response_content(ticket.get("result")))
-            except (ValueError, TypeError, json.JSONDecodeError) as exc:
-                self._count("qwen_shadow_invalid_response")
-                self._last_shadow_error = str(exc)[:240]
-                state.update({"status": "invalid_response", "ticket_id": ticket_id, "error": self._last_shadow_error})
-                await asyncio.to_thread(self.store.set_shadow, message_id, revision, state)
-                self._event("qwen_shadow_invalid_response", self._last_shadow_error)
-                return
-            state.update({
-                "status": "completed", "ticket_id": ticket_id,
-                "classification": parsed["classification"], "reason_code": parsed["reason_code"],
-                "shadow_verdict": shadow_verdict(parsed["classification"]).value,
-                "queue_wait_ms": queue_wait_ms, "backend_ms": backend_ms,
-            })
-            if await asyncio.to_thread(self.store.set_shadow, message_id, revision, state):
-                self._count("qwen_shadow_completed")
-                self._event("qwen_shadow_completed", parsed["classification"])
-            else:
-                self._count("stale_result_ignored")
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.exception("address_detector shadow_error message_id=%s", message_id)
-            error = str(exc)[:240]
-            if not isinstance(exc, LLMGatewayError):
-                error = type(exc).__name__
-            self._last_shadow_error = error
-            counter = "qwen_shadow_failed"
-            if isinstance(exc, LLMGatewayError) and getattr(exc, "status_code", 0) in {408, 504}:
-                counter = "qwen_shadow_timeout"
-            self._count(counter)
-            try:
-                await asyncio.to_thread(self.store.set_shadow, message_id, revision, {
-                    **state, "status": "timeout" if counter.endswith("timeout") else "failed", "error": error,
-                })
-            except Exception:
-                logger.exception("address_detector shadow_status_write_failed message_id=%s", message_id)
-            self._event(counter, error)
-
-    def _count(self, name: str, *, rate: bool = False) -> None:
-        self.metrics[name] += 1
+    def _count(self, name: str, value: int = 1, *, rate: bool = False) -> None:
+        self.metrics[name] += value
+        if name in {"background_batches", "background_messages", "background_llm_requests", "fast_llm_requests"}:
+            rate = True
         if rate:
             now = time.monotonic()
             values = self._rates[name]
@@ -514,11 +573,3 @@ class AddressDetectorRuntime:
             previous_messages=(),
             jump_url=getattr(message, "jump_url", None),
         )
-
-
-def _parse_time(value: str) -> datetime:
-    try:
-        parsed = datetime.fromisoformat(value)
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-    except (TypeError, ValueError):
-        return datetime.now(timezone.utc)

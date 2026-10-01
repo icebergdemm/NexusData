@@ -103,6 +103,33 @@ def _address_detector_startup_event(event: str, detail: str | None = None) -> No
     logger.info("address_detector startup_event=%s detail=%s", event, detail or "-")
 
 
+async def _resolve_address_detector_message(channel_id: int, message_id: int):
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            return None
+    try:
+        return await channel.fetch_message(message_id)
+    except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+        return None
+
+
+async def _load_address_detector_recent(channel_id: int, after_id: int, limit: int):
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            raise
+    after = discord.Object(id=after_id) if after_id else None
+    try:
+        return [message async for message in channel.history(limit=limit, after=after, oldest_first=True)]
+    except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+        raise
+
+
 async def _configure_address_detector(db_config: dict | None = None) -> None:
     """Load, validate and start the detector without affecting bot startup."""
 
@@ -112,10 +139,9 @@ async def _configure_address_detector(db_config: dict | None = None) -> None:
         await _address_detector_runtime.stop()
         _address_detector_runtime = None
 
-    from discord_bot.address_detector.analyzer import HybridAnalyzer, RuleAnalyzer
+    from discord_bot.address_detector.qwen_shadow import QwenSemanticAnalyzer
     from discord_bot.address_detector.config import load_detector_config
     from discord_bot.address_detector.notifier import DiscordNotifier, DiscordReactionPort
-    from discord_bot.address_detector.onnx_analyzer import load_optional_onnx
     from discord_bot.address_detector.persistence import AddressDetectorStore
     from discord_bot.address_detector.runtime import AddressDetectorRuntime
 
@@ -147,37 +173,20 @@ async def _configure_address_detector(db_config: dict | None = None) -> None:
         _address_detector_startup_event("detector_disabled", "startup validation failed")
         return
 
-    model_error_kind: list[str] = []
-    onnx_model = await asyncio.to_thread(
-        load_optional_onnx,
-        detector_config.onnx_model_path,
-        detector_config.onnx_tokenizer_path,
-        error_kind=model_error_kind,
-    ) if detector_config.analyzer_mode == "hybrid" else None
-    if detector_config.analyzer_mode == "hybrid":
-        if onnx_model is None:
-            detail = "rules-only degraded mode: ONNX model unavailable"
-            if model_error_kind:
-                detail += f" ({model_error_kind[0]})"
-            logger.warning("address_detector %s", detail)
-            _address_detector_startup_event("model_degraded", detail)
-        else:
-            detail = f"classifier={onnx_model.model_version} entailment_index={onnx_model.entailment_index}"
-            logger.info("address_detector model_loaded %s", detail)
-            _address_detector_startup_event("model_loaded", detail)
+    if not detector_config.llm_enabled:
+        logger.info("address_detector disabled: Qwen classifier is not enabled")
+        _address_detector_startup_event("detector_disabled", "Qwen classifier is disabled")
+        return
     runtime = AddressDetectorRuntime(
         detector_config,
         DiscordReactionPort(bot, detector_config),
-        analyzer=HybridAnalyzer(
-            RuleAnalyzer(),
-            onnx_model,
-            likely_threshold=detector_config.likely_threshold,
-            clean_threshold=detector_config.clean_threshold,
-        ),
+        analyzer=QwenSemanticAnalyzer(detector_config),
         store=store,
         on_signal=notifier.send_signal,
         on_edit_clean=notifier.mark_edit_clean,
         on_delete=notifier.mark_deleted,
+        resolve_message=_resolve_address_detector_message,
+        load_recent=_load_address_detector_recent,
     )
     await runtime.start()
     _address_detector_runtime = runtime
@@ -185,7 +194,7 @@ async def _configure_address_detector(db_config: dict | None = None) -> None:
     logger.info(
         "address_detector started channels=%s mode=%s workers=%s",
         len(detector_config.monitored_channel_ids),
-        detector_config.analyzer_mode,
+        "qwen",
         detector_config.worker_count,
     )
 

@@ -26,6 +26,14 @@ KNOWN_KEYS = (
     "address_queue_size",
     "address_worker_count",
     "address_llm_shadow_enabled",
+    "address_llm_enabled",
+    "address_llm_background_enabled",
+    "address_llm_fast_quota_min",
+    "address_llm_fast_queue_limit",
+    "address_llm_background_quota_min",
+    "address_llm_background_queue_limit",
+    "address_llm_background_debounce_seconds",
+    "address_llm_background_max_messages",
     "address_llm_quota_min",
     "address_llm_queue_limit",
     "address_llm_queue_wait_timeout_seconds",
@@ -68,6 +76,16 @@ def _float(value: object, key: str) -> float:
         raise ValueError(f"{key}: expected number") from exc
     if not 0 <= parsed <= 1:
         raise ValueError(f"{key}: expected 0..1")
+    return parsed
+
+
+def _seconds(value: object, key: str, minimum: float, maximum: float) -> float:
+    try:
+        parsed = float(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{key}: expected number of seconds") from exc
+    if not minimum <= parsed <= maximum:
+        raise ValueError(f"{key}: out of range")
     return parsed
 
 
@@ -116,12 +134,20 @@ class DetectorConfig:
     analyzer_mode: str = "hybrid"
     likely_threshold: float = 0.75
     clean_threshold: float = 0.80
-    analysis_timeout_seconds: float = 15.0
+    analysis_timeout_seconds: float = 130.0
     onnx_model_path: str = ""
     onnx_tokenizer_path: str = ""
     queue_size: int = 128
     worker_count: int = 1
     llm_shadow_enabled: bool = False
+    llm_enabled: bool = False
+    llm_background_enabled: bool = False
+    llm_fast_quota_min: int = 6
+    llm_fast_queue_limit: int = 10
+    llm_background_quota_min: int = 2
+    llm_background_queue_limit: int = 5
+    llm_background_debounce_seconds: float = 3.0
+    llm_background_max_messages: int = 8
     llm_quota_min: int = 6
     llm_queue_limit: int = 10
     llm_queue_wait_timeout_seconds: int = 60
@@ -147,13 +173,13 @@ class DetectorConfig:
             "signals_channel_configured": bool(self.signals_channel_id),
             "moderator_role_configured": bool(self.moderator_role_id),
             "emoji_configured": bool(self.redadmin_emoji_id),
-            "analyzer_mode": self.analyzer_mode,
-            "model_configured": bool(self.onnx_model_path),
+            "analyzer_mode": "qwen",
             "queue_size": self.queue_size,
             "worker_count": self.worker_count,
-            "llm_shadow_enabled": self.llm_shadow_enabled,
-            "llm_quota_min": self.llm_quota_min,
-            "llm_queue_limit": self.llm_queue_limit,
+            "llm_enabled": self.llm_enabled,
+            "llm_background_enabled": self.llm_background_enabled,
+            "llm_background_debounce_seconds": self.llm_background_debounce_seconds,
+            "llm_background_max_messages": self.llm_background_max_messages,
         }
 
 
@@ -161,6 +187,10 @@ def load_detector_config(settings: object, overrides: Mapping[str, object]) -> D
     mode = str(_raw(settings, overrides, "address_analyzer_mode", "hybrid")).strip().lower()
     if mode not in {"rules", "hybrid"}:
         raise ValueError("address_analyzer_mode: expected rules or hybrid")
+    llm_enabled = _bool(_raw(settings, overrides, "address_llm_enabled", False), "address_llm_enabled")
+    llm_background_enabled = _bool(_raw(settings, overrides, "address_llm_background_enabled", False), "address_llm_background_enabled")
+    if llm_background_enabled and not llm_enabled:
+        raise ValueError("address_llm_background_enabled requires address_llm_enabled")
     return DetectorConfig(
         enabled=_bool(_raw(settings, overrides, "moderation_address_detector_enabled", False), "moderation_address_detector_enabled"),
         signals_channel_id=_id(_raw(settings, overrides, "moderation_signals_channel_id", ""), "moderation_signals_channel_id"),
@@ -174,7 +204,10 @@ def load_detector_config(settings: object, overrides: Mapping[str, object]) -> D
         analyzer_mode=mode,
         likely_threshold=_float(_raw(settings, overrides, "address_likely_threshold", 0.75), "address_likely_threshold"),
         clean_threshold=_float(_raw(settings, overrides, "address_clean_threshold", 0.80), "address_clean_threshold"),
-        analysis_timeout_seconds=float(_raw(settings, overrides, "address_analysis_timeout_seconds", 15)),
+        analysis_timeout_seconds=max(
+            float(_raw(settings, overrides, "address_analysis_timeout_seconds", 130)),
+            _int(_raw(settings, overrides, "address_llm_max_request_age_seconds", 120), "address_llm_max_request_age_seconds", 1, 3600) + 2,
+        ),
         onnx_model_path=str(_raw(settings, overrides, "onnx_model_path", "") or "").strip(),
         onnx_tokenizer_path=str(_raw(settings, overrides, "onnx_tokenizer_path", "") or "").strip(),
         queue_size=_int(_raw(settings, overrides, "address_queue_size", 128), "address_queue_size", 1, 10000),
@@ -185,4 +218,12 @@ def load_detector_config(settings: object, overrides: Mapping[str, object]) -> D
         llm_queue_wait_timeout_seconds=_int(_raw(settings, overrides, "address_llm_queue_wait_timeout_seconds", 60), "address_llm_queue_wait_timeout_seconds", 1, 600),
         llm_backend_timeout_seconds=_int(_raw(settings, overrides, "address_llm_backend_timeout_seconds", 25), "address_llm_backend_timeout_seconds", 1, 120),
         llm_max_request_age_seconds=_int(_raw(settings, overrides, "address_llm_max_request_age_seconds", 120), "address_llm_max_request_age_seconds", 1, 3600),
+        llm_enabled=llm_enabled,
+        llm_background_enabled=llm_background_enabled,
+        llm_fast_quota_min=_int(_raw(settings, overrides, "address_llm_fast_quota_min", 6), "address_llm_fast_quota_min", 1, 60),
+        llm_fast_queue_limit=_int(_raw(settings, overrides, "address_llm_fast_queue_limit", 10), "address_llm_fast_queue_limit", 1, 100),
+        llm_background_quota_min=_int(_raw(settings, overrides, "address_llm_background_quota_min", 2), "address_llm_background_quota_min", 1, 60),
+        llm_background_queue_limit=_int(_raw(settings, overrides, "address_llm_background_queue_limit", 5), "address_llm_background_queue_limit", 1, 100),
+        llm_background_debounce_seconds=_seconds(_raw(settings, overrides, "address_llm_background_debounce_seconds", 3), "address_llm_background_debounce_seconds", 0.5, 10),
+        llm_background_max_messages=_int(_raw(settings, overrides, "address_llm_background_max_messages", 8), "address_llm_background_max_messages", 1, 8),
     )

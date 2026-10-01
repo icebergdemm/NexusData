@@ -22,6 +22,14 @@ class AnalysisResult:
     reason: str = ""
     classifier_version: str = "rules"
     matched_signals: tuple[str, ...] = field(default_factory=tuple)
+    operational_failure: bool = False
+    classification: str | None = None
+    reason_code: str | None = None
+    ticket_id: int | None = None
+    queue_wait_ms: int | None = None
+    backend_ms: int | None = None
+    total_ms: int | None = None
+    request_chars: int | None = None
 
     @classmethod
     def uncertain(cls, reason: str, *, classifier_version: str = "fallback") -> "AnalysisResult":
@@ -29,6 +37,15 @@ class AnalysisResult:
             verdict=Verdict.UNCERTAIN,
             reason=reason,
             classifier_version=classifier_version,
+        )
+
+    @classmethod
+    def failed(cls, reason: str, *, classifier_version: str = "qwen") -> "AnalysisResult":
+        return cls(
+            verdict=Verdict.UNCERTAIN,
+            reason=reason,
+            classifier_version=classifier_version,
+            operational_failure=True,
         )
 
 
