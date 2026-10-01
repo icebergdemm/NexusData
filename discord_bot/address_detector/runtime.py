@@ -338,7 +338,6 @@ class AddressDetectorRuntime:
                 ticket_id = await asyncio.to_thread(
                     submit, CLIENT_ID, request_messages(context), params,
                     idempotency_key=key, timeout=float(self.config.llm_backend_timeout_seconds),
-                    requested_by="address_detector",
                 )
             if not (previous or {}).get("submitted_counted"):
                 self._count("qwen_shadow_submitted", rate=True)
