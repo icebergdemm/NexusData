@@ -142,11 +142,14 @@ def _gateway_result(client_id: str, payload: dict[str, Any], key: str, config: A
                 status = ticket.get("status")
                 queue_wait_ms = ticket.get("queue_wait_ms")
                 backend_ms = ticket.get("backend_ms")
-                if queue_wait_ms is not None and backend_ms is not None and queue_wait_ms + backend_ms >= config.llm_max_request_age_seconds * 1000:
+                request_age_ms = ticket.get("request_age_ms")
+                if request_age_ms is not None and request_age_ms >= config.llm_max_request_age_seconds * 1000:
                     cancel(int(ticket_id))
                     raise TimeoutError("request_age_timeout")
                 if status in {"succeeded", "failed", "cancelled"}:
                     if status != "succeeded":
+                        if status == "failed" and attempt == 0:
+                            break
                         error = str(ticket.get("error") or "")
                         if "timeout" in error.casefold() or "timed out" in error.casefold():
                             raise TimeoutError("backend_timeout")
@@ -161,17 +164,13 @@ def _gateway_result(client_id: str, payload: dict[str, Any], key: str, config: A
                 if status == "queued" and queue_wait_ms is not None and queue_wait_ms >= config.llm_queue_wait_timeout_seconds * 1000:
                     cancel(int(ticket_id))
                     raise TimeoutError("queue_wait_timeout")
-                if queue_wait_ms is not None and backend_ms is not None and queue_wait_ms + backend_ms >= config.llm_max_request_age_seconds * 1000:
-                    cancel(int(ticket_id))
-                    raise TimeoutError("request_age_timeout")
                 if time.monotonic() >= deadline:
                     cancel(int(ticket_id))
                     raise TimeoutError("request_age_timeout")
                 time.sleep(0.25)
         except Exception as exc:
             last_error = exc
-            if attempt == 0:
-                continue
+            break
     error = str(last_error) or type(last_error).__name__
     if isinstance(last_error, TimeoutError):
         raise TimeoutError(error) from last_error

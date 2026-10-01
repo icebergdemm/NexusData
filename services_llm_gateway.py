@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import or_, update
@@ -49,9 +49,9 @@ class LLMGatewayError(Exception):
         self.status_code = status_code
 
 
-def _database_local_now() -> datetime:
-    """Return naive local time matching the database DateTime convention."""
-    return datetime.now()
+def _utc_now() -> datetime:
+    """MySQL DATETIME is naive; all gateway values stored in it are UTC."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def set_wake_callback(callback) -> None:
@@ -117,7 +117,8 @@ def submit(client_id, messages, params, priority=None, idempotency_key=None,
         ).count()
         if depth >= client["max_queue_depth"]:
             raise LLMGatewayError("LLM client queue is full", 429)
-        minute_ago = _database_local_now() - timedelta(minutes=1)
+        now = _utc_now()
+        minute_ago = now - timedelta(minutes=1)
         recent = db.query(AILlmRequest).filter(
             AILlmRequest.client_id == client_id,
             AILlmRequest.created_at >= minute_ago,
@@ -129,7 +130,7 @@ def submit(client_id, messages, params, priority=None, idempotency_key=None,
             client_id=client_id, backend=client["backend"],
             priority=int(priority if priority is not None else client["priority"]),
             request_json={"payload": payload, "timeout": float(timeout or client["timeout"])},
-            idempotency_key=key, requested_by=requested_by,
+            idempotency_key=key, requested_by=requested_by, created_at=now,
         )
         db.add(row)
         db.commit()
@@ -157,7 +158,7 @@ def poll(ticket_id: int) -> dict:
         row = db.query(AILlmRequest).filter(AILlmRequest.id == ticket_id).first()
         if not row:
             raise LLMGatewayError("Unknown LLM ticket", 404)
-        now = _database_local_now()
+        now = _utc_now()
         queue_end = row.started_at or now
         backend_end = row.finished_at or now
         queue_wait_ms = max(0, int((queue_end - row.created_at).total_seconds() * 1000))
@@ -165,12 +166,14 @@ def poll(ticket_id: int) -> dict:
             max(0, int((backend_end - row.started_at).total_seconds() * 1000))
             if row.started_at else None
         )
+        request_age_ms = max(0, int((now - row.created_at).total_seconds() * 1000))
         return {"ticket_id": row.id, "client_id": row.client_id, "status": row.status,
                 "result": row.result_ref, "error": row.error, "attempts": row.attempts,
                 "created_at": row.created_at.isoformat() if row.created_at else None,
                 "started_at": row.started_at.isoformat() if row.started_at else None,
                 "finished_at": row.finished_at.isoformat() if row.finished_at else None,
-                "queue_wait_ms": queue_wait_ms, "backend_ms": backend_ms}
+                "queue_wait_ms": queue_wait_ms, "backend_ms": backend_ms,
+                "request_age_ms": request_age_ms}
     finally:
         db.close()
 
@@ -184,7 +187,7 @@ def cancel(ticket_id: int) -> bool:
         result = db.execute(update(AILlmRequest).where(
             AILlmRequest.id == ticket_id,
             AILlmRequest.status.in_(("queued", "running")),
-        ).values(status="cancelled", finished_at=datetime.utcnow(), lease_expires_at=None))
+        ).values(status="cancelled", finished_at=_utc_now(), lease_expires_at=None))
         if not result.rowcount:
             db.rollback()
             return False
@@ -215,7 +218,7 @@ def find_ticket(client_id: str, idempotency_key: str) -> int | None:
 def claim_next(last_client: str | None = None) -> AILlmRequest | None:
     db = SessionLocal()
     try:
-        now = datetime.utcnow()
+        now = _utc_now()
         db.query(AILlmRequest).filter(
             AILlmRequest.status == "running", AILlmRequest.lease_expires_at < now
         ).update({"status": "queued", "lease_expires_at": None}, synchronize_session=False)
@@ -263,7 +266,7 @@ def finish(ticket_id: int, status: str, result=None, error=None) -> bool:
                 AILlmRequest.status != "cancelled",
             ).values(status=status, result_ref=bounded,
                      error=str(error)[:2000] if error else None,
-                     finished_at=datetime.utcnow(), lease_expires_at=None))
+                     finished_at=_utc_now(), lease_expires_at=None))
             db.commit()
             return bool(result.rowcount)
         return False
@@ -314,7 +317,7 @@ def purge_client(client_id) -> int:
     try:
         count = db.query(AILlmRequest).filter(AILlmRequest.client_id == client_id,
                                               AILlmRequest.status == "queued").update(
-                                                  {"status": "cancelled", "finished_at": datetime.utcnow()})
+                                                  {"status": "cancelled", "finished_at": _utc_now()})
         db.commit(); return count
     finally: db.close()
 
@@ -326,7 +329,7 @@ def cancel_queued(client_id=None) -> int:
         query = db.query(AILlmRequest).filter(AILlmRequest.status == "queued")
         if client_id:
             query = query.filter(AILlmRequest.client_id == client_id)
-        count = query.update({"status": "cancelled", "finished_at": datetime.utcnow()},
+        count = query.update({"status": "cancelled", "finished_at": _utc_now()},
                              synchronize_session=False)
         db.commit()
         return count
