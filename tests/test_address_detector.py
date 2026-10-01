@@ -79,3 +79,17 @@ def test_scope_honours_exclusions_and_ignores_automated_messages() -> None:
     assert not in_scope(_message(), config)
     assert not in_scope(_message(author=SimpleNamespace(bot=True)), ScopeConfig(monitored_channel_ids={10}))
     assert not in_scope(_message(webhook_id=42), ScopeConfig(monitored_channel_ids={10}))
+
+
+@pytest.mark.parametrize("message_type", ["default", "reply"])
+def test_scope_allows_normal_and_reply_human_messages(message_type: str) -> None:
+    message = _message(type=SimpleNamespace(name=message_type))
+
+    assert in_scope(message, ScopeConfig(monitored_channel_ids={10}))
+
+
+@pytest.mark.parametrize("message_type", ["system", "pinned_message", "application_command"])
+def test_scope_rejects_special_message_types(message_type: str) -> None:
+    message = _message(type=SimpleNamespace(name=message_type))
+
+    assert not in_scope(message, ScopeConfig(monitored_channel_ids={10}))

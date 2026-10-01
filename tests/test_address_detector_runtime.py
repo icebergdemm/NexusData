@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -117,6 +118,48 @@ def config():
     return DetectorConfig(enabled=True, monitored_channel_ids={2}, llm_enabled=True)
 
 
+def _fake_qwen_response(monkeypatch, classification, reason_code):
+    import discord_bot.address_detector.qwen_shadow as qwen
+
+    captured = {}
+    monkeypatch.setattr(runtime_module, "configure_limits", lambda *args: None)
+    monkeypatch.setattr(qwen, "find_ticket", lambda *_args: None)
+
+    def submit(_client, messages, _params, **_kwargs):
+        captured["payload"] = json.loads(messages[1]["content"])
+        return 901
+
+    def poll(ticket_id):
+        index = captured["payload"]["classify_indexes"][0]
+        content = json.dumps({"results": [{
+            "index": index, "classification": classification, "reason_code": reason_code,
+        }]})
+        return {
+            "ticket_id": ticket_id, "status": "succeeded", "queue_wait_ms": 0, "backend_ms": 2,
+            "result": {"choices": [{"message": {"content": content}}]},
+        }
+
+    monkeypatch.setattr(qwen, "submit", submit)
+    monkeypatch.setattr(qwen, "poll", poll)
+    return captured
+
+
+def _qwen_message(message_id, content, *, author_id=3, message_type="default", history=(), reply=None):
+    message = msg(message_id, content)
+    message.author.id = author_id
+    message.type = SimpleNamespace(name=message_type)
+    message.reference = SimpleNamespace(message_id=reply.id, resolved=reply) if reply else None
+
+    async def rows():
+        for item in history:
+            yield item
+
+    message.channel.history = lambda **_kwargs: rows()
+    if reply:
+        reply.channel = message.channel
+    return message
+
+
 def test_candidate_uses_queue_and_signal_callback() -> None:
     async def scenario():
         reactions = Reactions()
@@ -136,6 +179,142 @@ def test_candidate_uses_queue_and_signal_callback() -> None:
     assert events == [("add", 1)]
     assert store.analyses == [(1, Verdict.UNCERTAIN)]
     assert signals == [(1, Verdict.UNCERTAIN)]
+
+
+def test_reply_passes_scope_prefilter_and_serializes_target_before_current(monkeypatch) -> None:
+    captured = _fake_qwen_response(monkeypatch, "direct_familiar_address", "informal_pronoun")
+    target = msg(100, "Что именно мне проверить?")
+    target.author.id = 20
+    target.created_at = datetime.now(timezone.utc)
+    current = _qwen_message(
+        101, "А ты сам не видишь?", author_id=21, message_type="reply",
+        history=(target,), reply=target,
+    )
+    reactions, store, signals = Reactions(), Store(), []
+
+    async def scenario():
+        runtime = AddressDetectorRuntime(
+            config(), reactions, store=store,
+            on_signal=lambda context, result, _record: signals.append((context.message_id, result.verdict)),
+        )
+        await runtime.start()
+        accepted = await runtime.handle_message(current)
+        await runtime.join()
+        await runtime.stop()
+        return accepted
+
+    assert asyncio.run(scenario()) is True
+    assert store.upserts == 1
+    assert captured["payload"] == {
+        "messages": [
+            {"index": 0, "speaker": "s1", "text": "Что именно мне проверить?", "reply_to": None, "mentions": []},
+            {"index": 1, "speaker": "s2", "text": "А ты сам не видишь?", "reply_to": 0, "mentions": []},
+        ],
+        "classify_indexes": [1],
+    }
+    assert reactions.events == [("add", 101)]
+    assert signals == [(101, Verdict.LIKELY_VIOLATION)]
+
+
+def test_neighbor_quote_does_not_override_direct_classification_of_current_index(monkeypatch) -> None:
+    captured = _fake_qwen_response(monkeypatch, "direct_familiar_address", "informal_pronoun")
+    quote = msg(99, "Он мне написал: «глянь третий раздел». ")
+    quote.author.id = 3
+    current = _qwen_message(
+        101, "Ты можешь посмотреть третий раздел?", history=(quote,),
+    )
+    reactions, store, signals = Reactions(), Store(), []
+
+    async def scenario():
+        runtime = AddressDetectorRuntime(
+            config(), reactions, store=store,
+            on_signal=lambda context, result, _record: signals.append((context.message_id, result.verdict)),
+        )
+        await runtime.start()
+        assert await runtime.handle_message(current)
+        await runtime.join()
+        await runtime.stop()
+
+    asyncio.run(scenario())
+    assert captured["payload"]["classify_indexes"] == [1]
+    assert captured["payload"]["messages"][0]["text"] == quote.content
+    assert captured["payload"]["messages"][1]["text"] == "Ты можешь посмотреть третий раздел?"
+    assert reactions.events == [("add", 101)]
+    assert signals == [(101, Verdict.LIKELY_VIOLATION)]
+
+
+def test_meta_reply_is_a_candidate_and_valid_meta_result_removes_marker(monkeypatch) -> None:
+    captured = _fake_qwen_response(monkeypatch, "example_or_metadiscussion", "metadiscussion")
+    target = msg(100, "Что именно мне проверить?")
+    target.author.id = 20
+    current = _qwen_message(
+        101, 'Фраза «а ты сам не видишь?» тут считается фамильярной?',
+        author_id=21, message_type="reply", reply=target,
+    )
+    reactions, store, signals = Reactions(), Store(), []
+
+    async def scenario():
+        runtime = AddressDetectorRuntime(
+            config(), reactions, store=store,
+            on_signal=lambda *args: signals.append(args),
+        )
+        await runtime.start()
+        accepted = await runtime.handle_message(current)
+        await runtime.join()
+        await runtime.stop()
+        return accepted
+
+    assert asyncio.run(scenario()) is True
+    assert store.upserts == 1
+    assert captured["payload"]["messages"][1]["reply_to"] == 0
+    assert captured["payload"]["classify_indexes"] == [1]
+    assert reactions.events == [("add", 101), ("remove", 101)]
+    assert signals == []
+
+
+def test_invalid_semantic_pair_keeps_marker_and_does_not_signal(monkeypatch) -> None:
+    _fake_qwen_response(monkeypatch, "quoted_or_reported", "no_specific_addressee")
+    current = _qwen_message(101, 'Он написал: «ты можешь подойти?»')
+    reactions, store, signals = Reactions(), Store(), []
+
+    async def scenario():
+        runtime = AddressDetectorRuntime(
+            config(), reactions, store=store,
+            on_signal=lambda *args: signals.append(args),
+        )
+        await runtime.start()
+        accepted = await runtime.handle_message(current)
+        await runtime.join()
+        await runtime.stop()
+        return accepted
+
+    assert asyncio.run(scenario()) is True
+    assert reactions.events == [("add", 101)]
+    assert store.statuses[101] == "classification_failed"
+    assert store.analyses == []
+    assert signals == []
+
+
+def test_standalone_meta_result_is_clean_and_removes_marker(monkeypatch) -> None:
+    _fake_qwen_response(monkeypatch, "example_or_metadiscussion", "metadiscussion")
+    current = _qwen_message(101, 'Фраза «ты можешь посмотреть третий раздел?» считается фамильярной?')
+    reactions, store, signals = Reactions(), Store(), []
+
+    async def scenario():
+        runtime = AddressDetectorRuntime(
+            config(), reactions, store=store,
+            on_signal=lambda *args: signals.append(args),
+        )
+        await runtime.start()
+        accepted = await runtime.handle_message(current)
+        await runtime.join()
+        await runtime.stop()
+        return accepted
+
+    assert asyncio.run(scenario()) is True
+    assert store.upserts == 1
+    assert reactions.events == [("add", 101), ("remove", 101)]
+    assert signals == []
 
 
 def test_likely_production_result_creates_exactly_one_moderator_signal() -> None:

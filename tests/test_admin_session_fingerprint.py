@@ -211,15 +211,13 @@ def test_login_with_fingerprint_issues_fourteen_day_session():
             "client": ("127.0.0.1", 1234),
             "session": {},
         })
-        before = datetime.utcnow()
-
         _issue_admin_session(db, admin, response, request, "discord_oauth")
 
         session = db.query(models.AdminSession).one()
         assert session.browser_fingerprint_bound is True
         assert session.browser_fingerprint_hash
         assert session.browser_fingerprint_hash != "browser-id"
-        assert timedelta(days=13, hours=23) < session.expires_at - before <= timedelta(days=14)
+        assert timedelta(days=13, hours=23) < session.expires_at - session.created_at <= timedelta(days=14)
         assert cookie["expires"] == session.expires_at.replace(tzinfo=timezone.utc)
         assert "max_age" not in cookie
         assert session.auth_type == "discord_oauth"
