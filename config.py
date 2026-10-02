@@ -268,17 +268,7 @@ class Settings(BaseSettings):
     excluded_channel_ids: str = ""
     address_context_messages: int = Field(4, ge=1, le=5)
     address_incident_window_seconds: int = Field(120, ge=1, le=86400)
-    address_analyzer_mode: str = "hybrid"
-    address_likely_threshold: float = Field(0.75, ge=0, le=1)
-    address_clean_threshold: float = Field(0.80, ge=0, le=1)
-    address_analysis_timeout_seconds: float = Field(15.0, gt=0, le=120)
-    onnx_model_path: str = ""
-    onnx_tokenizer_path: str = ""
-    address_queue_size: int = Field(128, ge=1, le=10000)
-    address_worker_count: int = Field(1, ge=1, le=16)
-    address_llm_shadow_enabled: bool = False
     address_llm_quota_min: int = Field(6, ge=1, le=60)
-    address_llm_queue_limit: int = Field(10, ge=1, le=100)
     address_llm_queue_wait_timeout_seconds: int = Field(60, ge=1, le=600)
     address_llm_backend_timeout_seconds: int = Field(25, ge=1, le=120)
     address_llm_max_request_age_seconds: int = Field(120, ge=1, le=3600)

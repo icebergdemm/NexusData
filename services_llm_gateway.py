@@ -27,10 +27,9 @@ LLM_CLIENTS = {
                               "timeout": 240.0, "max_tokens": 2048, "max_queue_depth": 20},
     "monster_llm": {"backend": "dossier", "priority": 120, "quota_min": 12,
                     "timeout": 240.0, "max_tokens": 4096, "max_queue_depth": 50},
-    "address_detector_fast": {"backend": "dossier", "priority": 50, "quota_min": 6,
-                               "timeout": 25.0, "max_tokens": 64, "max_queue_depth": 10},
-    "address_detector_background": {"backend": "dossier", "priority": 210, "quota_min": 2,
-                                     "timeout": 25.0, "max_tokens": 160, "max_queue_depth": 5},
+    "address_detector": {"backend": "dossier", "priority": 210, "quota_min": 6,
+                         "timeout": 25.0, "max_tokens": 256, "max_queue_depth": 1,
+                         "max_active_requests": 1},
 }
 BACKENDS = {
     "dossier": {"url_key": "ai_dossier_url", "key": "ai_dossier_api_key",
@@ -104,14 +103,22 @@ def _validate(client_id: str, messages: Any, params: dict) -> tuple[dict, dict]:
 
 
 def submit(client_id, messages, params, priority=None, idempotency_key=None,
-           timeout=None, requested_by=None) -> int:
+           timeout=None, requested_by=None, application_metadata=None) -> int:
     client, payload = _validate(client_id, messages, params)
+    if application_metadata is not None and not isinstance(application_metadata, dict):
+        raise LLMGatewayError("application metadata must be an object")
     key = (idempotency_key or _request_hash(client_id, messages, payload))[:128]
     db = SessionLocal()
     try:
         existing = db.query(AILlmRequest).filter(AILlmRequest.idempotency_key == key).first()
         if existing:
             return existing.id
+        max_active = int(client.get("max_active_requests", 0) or 0)
+        if max_active and db.query(AILlmRequest).filter(
+            AILlmRequest.client_id == client_id,
+            AILlmRequest.status.in_(("queued", "running")),
+        ).count() >= max_active:
+            raise LLMGatewayError("LLM client already has an active request", 429)
         depth = db.query(AILlmRequest).filter(
             AILlmRequest.client_id == client_id, AILlmRequest.status == "queued"
         ).count()
@@ -129,7 +136,11 @@ def submit(client_id, messages, params, priority=None, idempotency_key=None,
         row = AILlmRequest(
             client_id=client_id, backend=client["backend"],
             priority=int(priority if priority is not None else client["priority"]),
-            request_json={"payload": payload, "timeout": float(timeout or client["timeout"])},
+            request_json={
+                "payload": payload,
+                "timeout": float(timeout or client["timeout"]),
+                **({"app_metadata": application_metadata} if application_metadata is not None else {}),
+            },
             idempotency_key=key, requested_by=requested_by, created_at=now,
         )
         db.add(row)
@@ -211,6 +222,20 @@ def find_ticket(client_id: str, idempotency_key: str) -> int | None:
             AILlmRequest.idempotency_key == idempotency_key,
         ).one_or_none()
         return int(row[0]) if row else None
+    finally:
+        db.close()
+
+
+def active_legacy_detector_tickets() -> list[dict]:
+    """Return old detector requests for the startup one-time reconciliation."""
+    db = SessionLocal()
+    try:
+        rows = db.query(AILlmRequest).filter(
+            AILlmRequest.client_id.in_(("address_detector_fast", "address_detector_background")),
+            AILlmRequest.status.in_(("queued", "running")),
+        ).all()
+        return [{"ticket_id": int(row.id), "client_id": row.client_id,
+                 "idempotency_key": row.idempotency_key, "status": row.status} for row in rows]
     finally:
         db.close()
 

@@ -108,25 +108,15 @@ async def _resolve_address_detector_message(channel_id: int, message_id: int):
     if channel is None:
         try:
             channel = await bot.fetch_channel(channel_id)
-        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+        except discord.NotFound:
             return None
+        except (discord.Forbidden, discord.HTTPException):
+            raise
     try:
         return await channel.fetch_message(message_id)
-    except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+    except discord.NotFound:
         return None
-
-
-async def _load_address_detector_recent(channel_id: int, after_id: int, limit: int):
-    channel = bot.get_channel(channel_id)
-    if channel is None:
-        try:
-            channel = await bot.fetch_channel(channel_id)
-        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
-            raise
-    after = discord.Object(id=after_id) if after_id else None
-    try:
-        return [message async for message in channel.history(limit=limit, after=after, oldest_first=True)]
-    except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+    except (discord.Forbidden, discord.HTTPException):
         raise
 
 
@@ -139,7 +129,7 @@ async def _configure_address_detector(db_config: dict | None = None) -> None:
         await _address_detector_runtime.stop()
         _address_detector_runtime = None
 
-    from discord_bot.address_detector.qwen_shadow import QwenSemanticAnalyzer
+    from discord_bot.address_detector.qwen_classifier import QwenSemanticAnalyzer
     from discord_bot.address_detector.config import load_detector_config
     from discord_bot.address_detector.notifier import DiscordNotifier, DiscordReactionPort
     from discord_bot.address_detector.persistence import AddressDetectorStore
@@ -148,9 +138,25 @@ async def _configure_address_detector(db_config: dict | None = None) -> None:
     try:
         detector_config = load_detector_config(settings, db_config or {})
     except ValueError as exc:
+        from services_llm_gateway import active_legacy_detector_tickets, cancel as cancel_llm_ticket
+
+        for ticket in await asyncio.to_thread(active_legacy_detector_tickets):
+            await asyncio.to_thread(cancel_llm_ticket, ticket["ticket_id"])
         logger.error("address_detector invalid_config error=%s", exc)
         _address_detector_startup_event("startup_validation_error", str(exc))
         return
+
+    store = AddressDetectorStore()
+    runtime = AddressDetectorRuntime(
+        detector_config,
+        DiscordReactionPort(bot, detector_config),
+        analyzer=QwenSemanticAnalyzer(detector_config),
+        store=store,
+        resolve_message=_resolve_address_detector_message,
+    )
+    await runtime._reconcile_legacy_tickets(
+        requeue=bool(detector_config.enabled and detector_config.llm_enabled and detector_config.monitored_channel_ids),
+    )
     if not detector_config.enabled:
         logger.info("address_detector disabled")
         _address_detector_startup_event("detector_disabled", "переключатель выключен")
@@ -160,7 +166,6 @@ async def _configure_address_detector(db_config: dict | None = None) -> None:
         _address_detector_startup_event("detector_disabled", "whitelist каналов пуст")
         return
 
-    store = AddressDetectorStore()
     notifier = DiscordNotifier(bot, detector_config, store)
     ready, validation_errors = await notifier.validate()
     for error in validation_errors:
@@ -177,25 +182,16 @@ async def _configure_address_detector(db_config: dict | None = None) -> None:
         logger.info("address_detector disabled: Qwen classifier is not enabled")
         _address_detector_startup_event("detector_disabled", "Qwen classifier is disabled")
         return
-    runtime = AddressDetectorRuntime(
-        detector_config,
-        DiscordReactionPort(bot, detector_config),
-        analyzer=QwenSemanticAnalyzer(detector_config),
-        store=store,
-        on_signal=notifier.send_signal,
-        on_edit_clean=notifier.mark_edit_clean,
-        on_delete=notifier.mark_deleted,
-        resolve_message=_resolve_address_detector_message,
-        load_recent=_load_address_detector_recent,
-    )
-    await runtime.start()
+    runtime.on_signal = notifier.send_signal
+    runtime.on_edit_clean = notifier.mark_edit_clean
+    runtime.on_delete = notifier.mark_deleted
+    await runtime.start(reconcile=False)
     _address_detector_runtime = runtime
     _address_detector_startup_event("detector_started", f"channels={len(detector_config.monitored_channel_ids)}")
     logger.info(
-        "address_detector started channels=%s mode=%s workers=%s",
+        "address_detector started channels=%s mode=%s",
         len(detector_config.monitored_channel_ids),
         "qwen",
-        detector_config.worker_count,
     )
 
 
@@ -207,8 +203,7 @@ def get_address_detector_status() -> dict:
     return {
         **runtime_status,
         "active": True,
-        "queue_depth": runtime.service.queue.qsize(),
-        "queue_capacity": runtime.service.queue.maxsize,
+        "queue_depth": runtime_status.get("queue_depth", 0),
         "events": [*_address_detector_startup_events, *runtime_status.get("events", [])],
     }
 
