@@ -216,6 +216,45 @@ def test_reply_passes_scope_prefilter_and_serializes_target_before_current(monke
     assert signals == [(101, Verdict.LIKELY_VIOLATION)]
 
 
+def test_direct_reply_stays_direct_after_same_phrase_was_discussed_in_context(monkeypatch) -> None:
+    captured = _fake_qwen_response(monkeypatch, "direct_familiar_address", "informal_pronoun")
+    meta = msg(98, 'Фраза «а ты сам не видишь?» тут считается фамильярной?')
+    meta.author.id = 30
+    target = msg(100, "Что именно мне проверить?")
+    target.author.id = 20
+    duplicate_text = msg(101, "Что именно мне проверить?")
+    duplicate_text.author.id = 20
+    current = _qwen_message(
+        102, "А ты сам не видишь?", author_id=21, message_type="reply",
+        history=(meta, target, duplicate_text), reply=target,
+    )
+    reactions, store, signals = Reactions(), Store(), []
+
+    async def scenario():
+        runtime = AddressDetectorRuntime(
+            config(), reactions, store=store,
+            on_signal=lambda context, result, _record: signals.append((context.message_id, result.verdict)),
+        )
+        await runtime.start()
+        accepted = await runtime.handle_message(current)
+        await runtime.join()
+        await runtime.stop()
+        return accepted
+
+    assert asyncio.run(scenario()) is True
+    messages = captured["payload"]["messages"]
+    assert captured["payload"]["classify_indexes"] == [3]
+    assert messages[0]["text"] == meta.content
+    assert messages[1]["text"] == target.content
+    assert messages[1]["speaker"] == "s2"
+    assert messages[2]["text"] == duplicate_text.content
+    assert messages[2]["speaker"] == "s2"
+    assert messages[3]["speaker"] == "s3"
+    assert messages[3]["reply_to"] == 1
+    assert reactions.events == [("add", 102)]
+    assert signals == [(102, Verdict.LIKELY_VIOLATION)]
+
+
 def test_neighbor_quote_does_not_override_direct_classification_of_current_index(monkeypatch) -> None:
     captured = _fake_qwen_response(monkeypatch, "direct_familiar_address", "informal_pronoun")
     quote = msg(99, "Он мне написал: «глянь третий раздел». ")
