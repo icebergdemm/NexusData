@@ -2,7 +2,7 @@ import { useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { Building2, Plus, Users2, Crown } from "lucide-react"
+import { Building2, Plus, Users2, Crown, Trash2 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -113,6 +113,7 @@ export function DepartmentsPage() {
   const navigate = useNavigate()
   const [createOpen, setCreateOpen] = useState(false)
   const { data: admin } = useCurrentAdmin()
+  const queryClient = useQueryClient()
   const seesAllDepartments = !!admin?.is_superuser || canDo(admin, "departments", "view_all")
 
   const { data, isLoading } = useQuery({
@@ -120,6 +121,15 @@ export function DepartmentsPage() {
     queryFn: () => departmentsApi.list(),
     staleTime: 5 * 60_000,
     refetchOnWindowFocus: false,
+  })
+
+  const archiveDepartment = useMutation({
+    mutationFn: (id: number) => departmentsApi.archive(id),
+    onSuccess: () => {
+      toast.success("Отдел удалён")
+      queryClient.invalidateQueries({ queryKey: ["departments"] })
+    },
+    onError: (error: Error) => toast.error(error.message),
   })
 
   return (
@@ -170,6 +180,21 @@ export function DepartmentsPage() {
                     <Badge variant="outline" className="gap-1"><Crown className="size-3" /> {d.head.forced_display_name ?? d.head.admin_name ?? "-"}</Badge>
                   )}
                   {d.is_head && <Badge className="bg-primary/15 text-primary">Вы — глава</Badge>}
+                  {admin?.is_superuser && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="ml-auto size-8 text-destructive hover:text-destructive"
+                      title={`Удалить отдел ${d.name}`}
+                      disabled={archiveDepartment.isPending}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        if (window.confirm(`Удалить отдел «${d.name}»?`)) archiveDepartment.mutate(d.id)
+                      }}
+                    >
+                      <Trash2 className="size-4" />
+                    </Button>
+                  )}
                 </div>
               </CardContent>
             </Card>

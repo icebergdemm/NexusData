@@ -66,6 +66,7 @@ def build_document_access_context(db: Session, admin: AdminUser, documents) -> D
             .filter(
                 DepartmentMember.department_id.in_(department_ids),
                 DepartmentMember.admin_id == admin.id,
+                DepartmentMember.is_excluded.is_(False),
             )
             .all()
         }
@@ -162,7 +163,7 @@ def require_document_write_access(db: Session, admin: AdminUser, department_id: 
             raise HTTPException(status_code=404, detail="Отдел не найден")
         member = (
             db.query(DepartmentMember)
-            .filter(DepartmentMember.department_id == department_id, DepartmentMember.admin_id == admin.id)
+            .filter(DepartmentMember.department_id == department_id, DepartmentMember.admin_id == admin.id, DepartmentMember.is_excluded.is_(False))
             .first()
         )
         if head_only_write and action == "edit" and not (admin.is_superuser or (member and member.is_head)):
@@ -217,7 +218,7 @@ def get_document_access(
             if dept:
                 member = (
                     db.query(DepartmentMember)
-                    .filter(DepartmentMember.department_id == dept.id, DepartmentMember.admin_id == admin.id)
+                    .filter(DepartmentMember.department_id == dept.id, DepartmentMember.admin_id == admin.id, DepartmentMember.is_excluded.is_(False))
                     .first()
                 )
         held_keys = set(member.held_level_keys or []) if member else set()
@@ -1022,7 +1023,9 @@ async def api_share_candidates(
 
         dept = db.query(Department).options(joinedload(Department.access_levels)).filter(Department.id == doc.department_id).first()
         member_admin_ids = {
-            row[0] for row in db.query(DepartmentMember.admin_id).filter(DepartmentMember.department_id == doc.department_id).all()
+            row[0] for row in db.query(DepartmentMember.admin_id).filter(
+                DepartmentMember.department_id == doc.department_id, DepartmentMember.is_excluded.is_(False)
+            ).all()
         }
         admins = (
             db.query(AdminUser)

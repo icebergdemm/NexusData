@@ -25,7 +25,7 @@ export default defineConfig(({ command, isPreview }) => ({
   },
   server: {
     proxy: {
-      '/api': 'http://localhost:8000',
+      '/api': { target: 'http://127.0.0.1:8000', ws: true },
       '/adminold': 'http://localhost:8000',
       '/static': 'http://localhost:8000',
       '/login': 'http://localhost:8000',

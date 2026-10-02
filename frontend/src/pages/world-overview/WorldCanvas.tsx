@@ -400,6 +400,14 @@ export function WorldCanvas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [geometry, renderState, animationNow, view, selectedCharacterId, targetMode, targetPoint, markers, selectedMarkerId, hoveredMarkerId, startZone, abyssStartY, characterColors])
 
+  const findMarkerAt = (mx: number, my: number, currentView: View) => markers.find((marker) => {
+    const [sx, sy] = toScreen(marker.x, marker.y, currentView)
+    const onAnchor = Math.hypot(sx - mx, sy - my) < 14
+    const labelWidth = Math.min(260, marker.label.length * 5.5)
+    const onLabel = Math.abs(mx - sx) <= labelWidth / 2 + 5 && my >= sy - 25 && my <= sy - 8
+    return onAnchor || onLabel
+  })
+
   const onMouseDown = (e: React.MouseEvent) => {
     if (!targetMode && onMoveMarker) {
       const container = containerRef.current
@@ -407,10 +415,7 @@ export function WorldCanvas({
         const rect = container.getBoundingClientRect()
         const mx = e.clientX - rect.left
         const my = e.clientY - rect.top
-        const hit = markers.find((m) => {
-          const [sx, sy] = toScreen(m.x, m.y, view)
-          return Math.hypot(sx - mx, sy - my) < 14
-        })
+        const hit = findMarkerAt(mx, my, view)
         if (hit?.draggable) {
           markerDragRef.current = hit.id
           onSelectMarker?.(hit.id)
@@ -436,10 +441,7 @@ export function WorldCanvas({
         const rect = container.getBoundingClientRect()
         const mx = e.clientX - rect.left
         const my = e.clientY - rect.top
-        const hit = markers.find((m) => {
-          const [sx, sy] = toScreen(m.x, m.y, view)
-          return Math.hypot(sx - mx, sy - my) < 14
-        })
+        const hit = findMarkerAt(mx, my, view)
         setHoveredMarkerId(hit?.id ?? null)
       }
     }
@@ -471,10 +473,7 @@ export function WorldCanvas({
       return
     }
 
-    const marker = markers.find((item) => {
-      const [sx, sy] = toScreen(item.x, item.y, view)
-      return Math.hypot(sx - mx, sy - my) < 14
-    })
+    const marker = findMarkerAt(mx, my, view)
     if (marker) { onSelectMarker?.(marker.id); onSelectCharacter(null); return }
     onSelectMarker?.(null)
 
@@ -522,10 +521,7 @@ export function WorldCanvas({
     const my = e.clientY - rect.top
     const v = viewRef.current
     const [wx, wy] = toWorld(mx, my, v)
-    const hit = markers.find((m) => {
-      const [sx, sy] = toScreen(m.x, m.y, v)
-      return Math.hypot(sx - mx, sy - my) < 14
-    })
+    const hit = findMarkerAt(mx, my, v)
     onMapContextMenu({ wx: Math.round(wx), wy: Math.round(wy), markerId: hit?.id ?? null, screenX: e.clientX, screenY: e.clientY })
   }
 

@@ -168,6 +168,7 @@ function RoleSyncCard() {
 }
 
 export function DiscordBotPage() {
+  const [activeTab, setActiveTab] = useState("settings")
   const [newKey, setNewKey] = useState({ key: "", value: "" })
   const queryClient = useQueryClient()
   const { data } = useQuery({
@@ -185,9 +186,9 @@ export function DiscordBotPage() {
 
   return (
     <div>
-      <PageHeader title="Discord бот" description="Синхронизация участников, каналы уведомлений, анти-рейд" icon={Bot} />
-      <Tabs defaultValue="settings">
-        <TabsList className="mb-4">
+      {activeTab !== "viewer" && <PageHeader title="Discord бот" description="Синхронизация участников, каналы уведомлений, анти-рейд" icon={Bot} />}
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <TabsList variant={activeTab === "viewer" ? "line" : "default"} className={activeTab === "viewer" ? "mb-2" : "mb-4"}>
           <TabsTrigger value="settings"><Settings className="size-3.5" /> Настройки</TabsTrigger>
           <TabsTrigger value="viewer"><MessageSquare className="size-3.5" /> Чат и участники</TabsTrigger>
           <TabsTrigger value="address-detector"><Bot className="size-3.5" /> Детектор обращений</TabsTrigger>

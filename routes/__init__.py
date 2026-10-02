@@ -38,6 +38,7 @@ from .communications import router as communications_router
 from .server_restart import router as server_restart_router
 from .lobby_advertisement import router as lobby_advertisement_router
 from .voice_profiles import router as voice_profiles_router
+from .external_worker import router as external_worker_router
 
 __all__ = [
     "status_router",
@@ -92,4 +93,5 @@ __all__ = [
     "server_restart_router",
     "lobby_advertisement_router",
     "voice_profiles_router",
+    "external_worker_router",
 ]

@@ -1267,6 +1267,7 @@ class AdminService:
         
         # Mark as deleted
         admin.is_deleted = 1
+        admin.auto_provision_excluded = True
         admin.privilege_group_id = None
         admin.is_superuser = False
         admin.individual_permissions = None
@@ -1277,6 +1278,9 @@ class AdminService:
             AdminSession.admin_id == admin_id,
             AdminSession.revoked == 0,
         ).update({"revoked": 1})
+
+        from models import DepartmentMember
+        self.db.query(DepartmentMember).filter(DepartmentMember.admin_id == admin_id).delete(synchronize_session=False)
         
         self.db.commit()
     

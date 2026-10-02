@@ -481,6 +481,29 @@ def admin_update(
     return _serialize(row)
 
 
+@admin_router.post("/reset-adaptations")
+def admin_reset_adaptations(
+    server: str = Query(...),
+    admin: AdminUser = Depends(_current_admin),
+    db: Session = Depends(get_game_db),
+):
+    """Clear adaptive history and round reports while preserving config and plans."""
+    _require(admin, "manage_memory")
+    row = _get_or_create(db, _normalize_server(server))
+    memory = dict(row.memory) if isinstance(row.memory, dict) else {}
+    for key in ("waves", "submarines", "global_performance_ema"):
+        memory.pop(key, None)
+    row.memory = memory
+    row.round_reports = "[]"
+    db.query(MonsterSpawnRoundReport).filter_by(server=row.server).delete(synchronize_session=False)
+    row.desired_revision = (row.desired_revision or 0) + 1
+    row.updated_by_admin_id = admin.id
+    row.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(row)
+    return _serialize(row)
+
+
 @admin_router.get("/analysis")
 def admin_analysis(
     server: str = Query(...),
@@ -579,6 +602,9 @@ class LLMRuntimeUpdate(BaseModel):
     enabled: Optional[bool] = None
     auto_apply: Optional[bool] = None
     auto_interval_minutes: Optional[int] = Field(None, ge=0, le=1440)
+    live_analysis_enabled: Optional[bool] = None
+    live_control_enabled: Optional[bool] = None
+    live_analysis_interval_seconds: Optional[int] = Field(None, ge=30, le=600)
 
 
 class LLMRunRequest(BaseModel):
@@ -588,6 +614,8 @@ class LLMRunRequest(BaseModel):
 
 class LLMApplyProposal(BaseModel):
     run_id: str
+    change_indices: Optional[List[int]] = None
+    decision: str = Field("accepted", pattern="^(accepted|rejected)$")
 
 
 def _get_main_db() -> Session:
@@ -653,6 +681,12 @@ def admin_llm_runtime_update(
             runtime["auto_apply"] = payload.auto_apply
         if payload.auto_interval_minutes is not None:
             runtime["auto_interval_minutes"] = payload.auto_interval_minutes
+        if payload.live_analysis_enabled is not None:
+            runtime["live_analysis_enabled"] = payload.live_analysis_enabled
+        if payload.live_control_enabled is not None:
+            runtime["live_control_enabled"] = payload.live_control_enabled
+        if payload.live_analysis_interval_seconds is not None:
+            runtime["live_analysis_interval_seconds"] = payload.live_analysis_interval_seconds
         save_llm_runtime(main_db, server_key, runtime)
     finally:
         main_db.close()
@@ -692,6 +726,25 @@ def admin_llm_run(
     return JSONResponse(status_code=202, content={"status": "queued", "run": run})
 
 
+@admin_router.post("/llm/runs/{run_id}/cancel")
+def admin_cancel_llm_run(
+    run_id: str,
+    server: str = Query(...),
+    admin: AdminUser = Depends(_current_admin),
+):
+    _require(admin, "edit")
+    from services_llm_monster import cancel_llm_run
+
+    main_db = _get_main_db()
+    try:
+        cancelled = cancel_llm_run(main_db, _normalize_server(server), run_id)
+    finally:
+        main_db.close()
+    if not cancelled:
+        raise HTTPException(status_code=404, detail="Активный LLM-цикл не найден")
+    return {"status": "cancelled"}
+
+
 @admin_router.post("/llm/apply-proposal")
 def admin_llm_apply_proposal(
     payload: LLMApplyProposal,
@@ -710,9 +763,28 @@ def admin_llm_apply_proposal(
     try:
         run = main_db.query(MonsterSpawnLLMRun).filter_by(
             server=server_key, run_id=payload.run_id, status="succeeded").first()
-        changes = (run.result_json or {}).get("proposed_changes") if run else None
-        if not isinstance(changes, list) or not changes:
+        result = dict(run.result_json or {}) if run else {}
+        proposals = result.get("proposed_changes")
+        if not isinstance(proposals, list) or not proposals:
             raise HTTPException(status_code=404, detail="Предложение не найдено")
+        decisions = dict(result.get("change_decisions") or {})
+        indices = list(dict.fromkeys(payload.change_indices if payload.change_indices is not None
+                                     else [index for index in range(len(proposals)) if str(index) not in decisions]))
+        if payload.change_indices is not None and any(index < 0 or index >= len(proposals) for index in indices):
+            raise HTTPException(status_code=400, detail="Не выбраны изменения")
+        already_decided = [index for index in indices if str(index) in decisions]
+        if any(decisions[str(index)] != payload.decision for index in already_decided):
+            raise HTTPException(status_code=409, detail="Для части предложений уже принято другое решение")
+        pending_indices = [index for index in indices if str(index) not in decisions]
+        if payload.decision == "rejected":
+            decisions.update({str(index): "rejected" for index in pending_indices})
+            result["change_decisions"] = decisions
+            run.result_json = result
+            main_db.commit()
+            return {"status": "ok", "decision": "rejected", "changes": []}
+        changes = [proposals[index] for index in pending_indices]
+        if not changes:
+            return {"status": "ok", "decision": "accepted", "changes": []}
         row = _get_or_create(db, server_key)
         config = copy.deepcopy(row.config or {})
         current = config.get("global") or {}
@@ -732,6 +804,10 @@ def admin_llm_apply_proposal(
         row.updated_by_admin_id = admin.id
         row.updated_at = datetime.utcnow()
         db.commit()
+        decisions.update({str(index): "accepted" for index in pending_indices})
+        result["change_decisions"] = decisions
+        run.result_json = result
+        main_db.commit()
         return {"status": "ok", "revision": row.desired_revision, "changes": accepted}
     finally:
         main_db.close()

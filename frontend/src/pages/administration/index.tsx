@@ -11,6 +11,7 @@ import { api } from "@/lib/api"
 import { useCurrentAdmin } from "@/lib/auth"
 import { ServerRestartSettings } from "./server-restarts"
 import { LobbyAdvertisementSettings } from "./lobby-advertisements"
+import { ExternalWorkersPanel } from "./external-workers"
 
 // Статистика (онлайн за период, топ игроков) отсюда убрана — она дублировала
 // страницу «Аналитика» неоптимизированной версией расчётов (полный скан
@@ -194,6 +195,7 @@ export function AdministrationPage() {
 
       {me?.is_superuser && <ServerRestartSettings />}
       {me?.is_superuser && <LobbyAdvertisementSettings />}
+      {me?.is_superuser && <ExternalWorkersPanel />}
 
       {me?.is_superuser && (
         <Card className="overflow-hidden py-0">

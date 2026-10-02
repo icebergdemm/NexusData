@@ -62,7 +62,8 @@ def get_department_or_404(db: Session, department_id: int) -> Department:
 def get_member(db: Session, department_id: int, admin_id: int) -> Optional[DepartmentMember]:
     return (
         db.query(DepartmentMember)
-        .filter(DepartmentMember.department_id == department_id, DepartmentMember.admin_id == admin_id)
+        .filter(DepartmentMember.department_id == department_id, DepartmentMember.admin_id == admin_id,
+                DepartmentMember.is_excluded.is_(False))
         .first()
     )
 
@@ -378,7 +379,7 @@ def serialize_department(dept: Department, db: Session, current_admin: AdminUser
     members = (
         db.query(DepartmentMember)
         .options(joinedload(DepartmentMember.admin))
-        .filter(DepartmentMember.department_id == dept.id)
+        .filter(DepartmentMember.department_id == dept.id, DepartmentMember.is_excluded.is_(False))
         .all()
     )
     head = next((m for m in members if m.is_head), None)
@@ -431,7 +432,7 @@ def api_list_departments(db: Session = Depends(get_db), current_admin: AdminUser
     # same as documents:view vs documents:view_all.
     if not (current_admin.is_superuser or check_permission(current_admin, "departments", "view_all")):
         q = q.join(DepartmentMember, DepartmentMember.department_id == Department.id).filter(
-            DepartmentMember.admin_id == current_admin.id
+            DepartmentMember.admin_id == current_admin.id, DepartmentMember.is_excluded.is_(False)
         )
     depts = q.order_by(Department.name).all()
     return {
@@ -757,7 +758,7 @@ async def api_list_department_members(department_id: int, db: Session = Depends(
     members = (
         db.query(DepartmentMember)
         .options(joinedload(DepartmentMember.admin))
-        .filter(DepartmentMember.department_id == dept.id)
+        .filter(DepartmentMember.department_id == dept.id, DepartmentMember.is_excluded.is_(False))
         .order_by(DepartmentMember.added_at)
         .all()
     )
@@ -811,8 +812,12 @@ async def api_add_department_member(department_id: int, request: Request, db: Se
     if not target_admin:
         raise HTTPException(status_code=400, detail="Укажите admin_id или discord_id")
 
-    if get_member(db, dept.id, target_admin.id):
+    existing_membership = db.query(DepartmentMember).filter(
+        DepartmentMember.department_id == dept.id, DepartmentMember.admin_id == target_admin.id
+    ).first()
+    if existing_membership and not existing_membership.is_excluded:
         raise HTTPException(status_code=409, detail="Этот пользователь уже состоит в отделе")
+    target_admin.auto_provision_excluded = False
 
     # Item 1 — auto-link the freshly-created (or just-restored) account to
     # its in-game player profile, same conservative match rule as
@@ -850,17 +855,16 @@ async def api_add_department_member(department_id: int, request: Request, db: Se
     elevated = _grants_elevated_access(final_held_keys, is_head_flag, is_deputy_flag)
     _ensure_linked_or_link(db, target_admin.id, elevated, body.get("steamid"))
 
-    dm = DepartmentMember(
-        department_id=dept.id,
-        admin_id=target_admin.id,
-        held_level_keys=final_held_keys,
-        is_head=is_head_flag,
-        is_deputy_head=is_deputy_flag,
-        is_auto=False,
-        added_by_admin_id=current_admin.id,
-        role_state_updated_at=datetime.utcnow(),
-    )
-    db.add(dm)
+    dm = existing_membership or DepartmentMember(department_id=dept.id, admin_id=target_admin.id)
+    dm.held_level_keys = final_held_keys
+    dm.is_head = is_head_flag
+    dm.is_deputy_head = is_deputy_flag
+    dm.is_auto = False
+    dm.is_excluded = False
+    dm.added_by_admin_id = current_admin.id
+    dm.role_state_updated_at = datetime.utcnow()
+    if existing_membership is None:
+        db.add(dm)
     _queue_role_sync(db, target_admin, _role_ids_for_membership(dept, final_held_keys), set(), current_admin.id)
     db.commit()
     return {"status": "ok", "member": serialize_member(dm, db=db), "auto_link": auto_link}
@@ -923,7 +927,12 @@ async def api_remove_department_member(department_id: int, member_id: int, db: S
     if not dm:
         raise HTTPException(status_code=404, detail="Сотрудник не найден")
     _queue_role_sync(db, dm.admin, set(), _role_ids_for_membership(dept, dm.held_level_keys or []), current_admin.id)
-    db.delete(dm)
+    dm.is_excluded = True
+    dm.held_level_keys = []
+    dm.is_head = False
+    dm.is_deputy_head = False
+    dm.is_auto = False
+    dm.role_state_updated_at = datetime.utcnow()
     db.commit()
     return {"status": "ok"}
 
@@ -962,7 +971,7 @@ async def api_department_rating_leaderboard(department_id: int, db: Session = De
     members = (
         db.query(DepartmentMember)
         .options(joinedload(DepartmentMember.admin))
-        .filter(DepartmentMember.department_id == dept.id)
+        .filter(DepartmentMember.department_id == dept.id, DepartmentMember.is_excluded.is_(False))
         .all()
     )
     forced_names = _forced_names_by_admin_id(db, [m.admin_id for m in members])

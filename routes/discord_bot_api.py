@@ -396,7 +396,7 @@ async def api_discord_role_sync_preview(request: Request, db: Session = Depends(
     memberships = (
         db.query(DepartmentMember)
         .join(Department, Department.id == DepartmentMember.department_id)
-        .filter(Department.is_archived.is_(False))
+        .filter(Department.is_archived.is_(False), DepartmentMember.is_excluded.is_(False))
         .options(joinedload(DepartmentMember.admin), joinedload(DepartmentMember.department).joinedload(Department.access_levels))
         .all()
     )

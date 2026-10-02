@@ -54,13 +54,19 @@ class AILlmWorker:
                 db = SessionLocal(); ai_task_log(db, row.client_id, str(row.id), "claimed"); db.close()
                 db = SessionLocal(); ai_task_log(db, row.client_id, str(row.id), "request_sent"); db.close()
                 result, _elapsed = post_backend(row.backend, row.request_json["payload"], row.request_json["timeout"])
+                finished = finish(row.id, "succeeded", result=result)
+                if not finished:
+                    self.last_status = "cancelled"
+                    continue
                 db = SessionLocal(); ai_task_log(db, row.client_id, str(row.id), "response_received"); db.close()
-                finish(row.id, "succeeded", result=result)
                 db = SessionLocal(); ai_task_log(db, row.client_id, str(row.id), "validated"); db.close()
                 self.last_status = "succeeded"
                 self._stop.wait(1.5)
             except Exception as exc:
-                finish(row.id, "failed", error=exc)
+                finished = finish(row.id, "failed", error=exc)
+                if not finished:
+                    self.last_status = "cancelled"
+                    continue
                 try:
                     from services_ai_tasklog import ai_task_log
                     from database import SessionLocal

@@ -308,8 +308,14 @@ class InjectionGuardMiddleware(BaseHTTPMiddleware):
                 and _secrets.compare_digest(str(provided_key), str(settings.client_api_key))
             )
         )
+        authorization = request.headers.get("authorization", "")
+        authenticated_worker_request = bool(
+            request.url.path.startswith("/api/v1/external-worker/")
+            and authorization.lower().startswith("bearer ")
+            and authorization[7:].strip()
+        )
 
-        if self._is_blocked(ip, now) and not authenticated_service:
+        if self._is_blocked(ip, now) and not authenticated_service and not authenticated_worker_request:
             return PlainTextResponse("Forbidden", status_code=403)
 
         # path уже url-decoded Starlette'ом; query_string — сырой, декодируем

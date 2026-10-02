@@ -205,9 +205,7 @@ export interface ActiveWaveTelemetry {
   spawn_reason: string
   elapsed_seconds: number
   expected_repel_seconds: number
-  struggling: boolean
-  engagement_seconds: number
-  in_sub_seconds: number
+  tracking_timeout_seconds?: number
   monsters_alive: number
   monsters_total: number
   monster_counts: Record<string, number>
@@ -246,7 +244,6 @@ export interface RecentWaveTelemetry {
   crew_deaths: number
   sub_health_loss: number
   effective_difficulty: number
-  engagement_seconds: number
   progress_at_spawn: number
   modifications: string
   monster_counts: Record<string, number>
@@ -336,6 +333,9 @@ export interface LLMRuntime {
   enabled: boolean
   auto_apply: boolean
   auto_interval_minutes: number
+  live_analysis_enabled: boolean
+  live_control_enabled: boolean
+  live_analysis_interval_seconds: number
   last_run_at: string | null
   history: { at: string; mode: string; summary: string; applied: number; rejected: number; confidence: number }[]
   pending_run: LLMRun | null
@@ -347,7 +347,7 @@ export interface LLMRunRecord {
   run_id: string
   server: string
   mode: "analyze" | "apply" | "spawn" | string
-  source: "manual" | "auto" | string
+  source: "manual" | "auto" | "live" | string
   status: "queued" | "running" | "succeeded" | "failed" | string
   instruction: string
   requested_by_admin_id: number | null
@@ -363,9 +363,21 @@ export interface LLMRunRecord {
   result: {
     situation?: string
     crew_summary?: string
+    scores?: {
+      crew_effectiveness: number | null
+      monster_strength: number | null
+      wave_pressure: number | null
+      ship_efficiency: number | null
+      basis?: string
+    }
+    live_metrics?: Record<string, unknown>
+    live_proposal?: { action: string; reason_code: string; evidence: string[]; hold_seconds: number }
+    live_execution?: { status: string; action?: string; reason?: string }
+    findings?: { kind: string; detail: string; evidence: string }[]
     recommendations?: { title: string; detail: string }[]
     applied_changes?: { key: string; new_value: unknown; old_value?: unknown; reason?: string }[]
     proposed_changes?: { key: string; new_value: unknown; old_value?: unknown; reason?: string }[]
+    change_decisions?: Record<string, "accepted" | "rejected">
     rejected?: string[]
     spawn_requests?: { species: string; count: number; hp_multiplier: number; position_hint: string; reason?: string }[]
     plan_ids?: string[]
@@ -470,6 +482,8 @@ export const monsterSpawnApi = {
   get: (server: string) => api.get<MonsterSpawnState>(`/api/v1/admin/monster-spawn?server=${encodeURIComponent(server)}`).then(normalizeMonsterSpawnState),
   update: (server: string, body: Partial<Pick<MonsterSpawnState, "config" | "memory" | "plans">>) =>
     api.put<MonsterSpawnState>(`/api/v1/admin/monster-spawn?server=${encodeURIComponent(server)}`, body).then(normalizeMonsterSpawnState),
+  resetAdaptations: (server: string) =>
+    api.post<MonsterSpawnState>(`/api/v1/admin/monster-spawn/reset-adaptations?server=${encodeURIComponent(server)}`, {}).then(normalizeMonsterSpawnState),
   analysis: (server: string) => api.get<MonsterSpawnAnalysis>(`/api/v1/admin/monster-spawn/analysis?server=${encodeURIComponent(server)}`),
   reports: (server: string) => api.get<{ server: string; reports: RoundReport[] }>(`/api/v1/admin/monster-spawn/reports?server=${encodeURIComponent(server)}`),
   retryRoundAnalysis: (server: string, reportId: number) =>
@@ -479,10 +493,12 @@ export const monsterSpawnApi = {
     api.get<{ runtime: LLMRuntime; deployment: LLMDeployment; endpoint_configured: boolean }>(`/api/v1/admin/monster-spawn/llm/runtime?server=${encodeURIComponent(server)}`),
   llmRuns: (server: string, limit = 30) =>
     api.get<{ runs: LLMRunRecord[] }>(`/api/v1/admin/monster-spawn/llm/runs?server=${encodeURIComponent(server)}&limit=${limit}`),
-  updateLLMRuntime: (server: string, body: Partial<Pick<LLMRuntime, "enabled" | "auto_apply" | "auto_interval_minutes">>) =>
+  updateLLMRuntime: (server: string, body: Partial<Pick<LLMRuntime, "enabled" | "auto_apply" | "auto_interval_minutes" | "live_analysis_enabled" | "live_control_enabled" | "live_analysis_interval_seconds">>) =>
     api.put<{ status: string; runtime: LLMRuntime }>(`/api/v1/admin/monster-spawn/llm/runtime?server=${encodeURIComponent(server)}`, body),
   runLLM: (server: string, body: { mode: "analyze" | "apply" | "spawn"; instruction?: string }) =>
     api.post<{ status: string; run: LLMRun }>(`/api/v1/admin/monster-spawn/llm/run?server=${encodeURIComponent(server)}`, body),
-  applyProposal: (server: string, runId: string) =>
-    api.post<{ status: string; revision: number }>(`/api/v1/admin/monster-spawn/llm/apply-proposal?server=${encodeURIComponent(server)}`, { run_id: runId }),
+  cancelLLMRun: (server: string, runId: string) =>
+    api.post<{ status: string }>(`/api/v1/admin/monster-spawn/llm/runs/${encodeURIComponent(runId)}/cancel?server=${encodeURIComponent(server)}`, {}),
+  applyProposal: (server: string, runId: string, changeIndices?: number[], decision: "accepted" | "rejected" = "accepted") =>
+    api.post<{ status: string; revision?: number }>(`/api/v1/admin/monster-spawn/llm/apply-proposal?server=${encodeURIComponent(server)}`, { run_id: runId, change_indices: changeIndices, decision }),
 }

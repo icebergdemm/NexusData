@@ -29,8 +29,6 @@ const SubProjectsListPage = lazy(() => import("@/pages/sub-projects").then(({ Su
 const SubProjectDetailPage = lazy(() => import("@/pages/sub-projects/detail").then(({ SubProjectDetailPage }) => ({ default: SubProjectDetailPage })))
 const SubProjectFormPage = lazy(() => import("@/pages/sub-projects/form").then(({ SubProjectFormPage }) => ({ default: SubProjectFormPage })))
 const SubProjectCategoriesPage = lazy(() => import("@/pages/sub-projects/categories").then(({ SubProjectCategoriesPage }) => ({ default: SubProjectCategoriesPage })))
-const SubProjectsPolygonListPage = lazy(() => import("@/pages/sub-projects-polygon").then(({ SubProjectsPolygonListPage }) => ({ default: SubProjectsPolygonListPage })))
-const SubProjectsPolygonDetailPage = lazy(() => import("@/pages/sub-projects-polygon/detail").then(({ SubProjectsPolygonDetailPage }) => ({ default: SubProjectsPolygonDetailPage })))
 const SubCheckerPage = lazy(() => import("@/pages/sub-checker").then(({ SubCheckerPage }) => ({ default: SubCheckerPage })))
 const ReplaysListPage = lazy(() => import("@/pages/replays").then(({ ReplaysListPage }) => ({ default: ReplaysListPage })))
 const ReplayPlayerPage = lazy(() => import("@/pages/replays/player").then(({ ReplayPlayerPage }) => ({ default: ReplayPlayerPage })))
@@ -146,8 +144,6 @@ export default function App() {
           <Route path="sub-projects/new" element={<SubProjectFormPage />} />
           <Route path="sub-projects/:projectId" element={<SubProjectDetailPage />} />
           <Route path="sub-projects/:projectId/edit" element={<SubProjectFormPage />} />
-          <Route path="sub-projects-polygon" element={<SubProjectsPolygonListPage />} />
-          <Route path="sub-projects-polygon/:projectId" element={<SubProjectsPolygonDetailPage />} />
           <Route path="sub-checker" element={<SubCheckerPage />} />
           <Route path="ratings" element={<RatingsPage />} />
           <Route path="ratings/rewards" element={<RewardsConfigPage />} />

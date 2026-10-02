@@ -214,7 +214,7 @@ class MonsterLLMQueueTests(unittest.TestCase):
                 "situation": "test",
             }
 
-            def _fake_cycle(main_db, server, state, mode="analyze", instruction=None, task_ref=None):
+            def _fake_cycle(main_db, server, state, mode="analyze", instruction=None, task_ref=None, on_ticket=None):
                 self.assertEqual(server, "ASPER1")
                 self.assertEqual(mode, "apply")
                 state["config"]["global"]["intensity_threshold"] = 0.25

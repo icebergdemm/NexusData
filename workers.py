@@ -620,19 +620,12 @@ def task_finalize_replay_streams() -> dict:
 
 
 def task_process_voice_profiles() -> dict:
-    """Scan one pending direct-identity nwdemo-v2 archive when enabled."""
-    from services_voice_profiles import (
-        process_next_nwdemo_voice_profile,
-        recover_stale_nwdemo_processing,
-        voice_profile_scanner_enabled,
-    )
+    """Dispatch voice-profile extraction to registered external workers."""
+    from services_external_worker import dispatch_voice_profile_work
 
     db = SessionLocal()
     try:
-        recovery = recover_stale_nwdemo_processing(db)
-        if not voice_profile_scanner_enabled(db):
-            return {"status": "disabled", **recovery}
-        return {**recovery, **process_next_nwdemo_voice_profile(db)}
+        return dispatch_voice_profile_work(db)
     except Exception:
         db.rollback()
         logger.exception("Voice profile worker failed")
@@ -834,6 +827,10 @@ def task_sync_department_roles() -> dict:
                 db.flush()
                 admins_by_discord_id[dm.discord_id] = admin
                 provisioned += 1
+            elif admin.auto_provision_excluded:
+                # A superuser explicitly removed this Discord account from
+                # the site; Discord role grants must not resurrect it.
+                continue
             elif admin.is_deleted and grants:
                 # Regained a department-granting role after being
                 # soft-deleted — restore login access. Privileges stay
@@ -860,6 +857,8 @@ def task_sync_department_roles() -> dict:
             for department_id in touched_depts:
                 grant = grants.get(department_id)
                 member = existing.get(department_id)
+                if member is not None and member.is_excluded:
+                    continue
 
                 if member is not None and not member.is_auto:
                     continue  # a human has taken ownership of this row — leave it alone
@@ -943,7 +942,7 @@ def task_reconcile_department_discord_roles() -> dict:
         memberships = (
             db.query(DepartmentMember)
             .join(Department, Department.id == DepartmentMember.department_id)
-            .filter(Department.is_archived.is_(False))
+            .filter(Department.is_archived.is_(False), DepartmentMember.is_excluded.is_(False))
             .options(
                 joinedload(DepartmentMember.admin),
                 joinedload(DepartmentMember.department).joinedload(Department.access_levels),
@@ -1026,7 +1025,9 @@ def task_sync_department_kits() -> dict:
             if not level:
                 continue
 
-            members = db.query(DepartmentMember).filter(DepartmentMember.department_id == level.department_id).all()
+            members = db.query(DepartmentMember).filter(
+                DepartmentMember.department_id == level.department_id, DepartmentMember.is_excluded.is_(False)
+            ).all()
             eligible_admin_ids = {m.admin_id for m in members if level.key in (m.held_level_keys or [])}
 
             existing_grants = db.query(DepartmentKitGrant).filter(DepartmentKitGrant.binding_id == binding.id).all()
@@ -1118,7 +1119,7 @@ def task_sync_auto_server_privileges() -> dict:
         memberships = (
             db.query(DepartmentMember)
             .join(Department, Department.id == DepartmentMember.department_id)
-            .filter(Department.is_archived.is_(False))
+            .filter(Department.is_archived.is_(False), DepartmentMember.is_excluded.is_(False))
             .all()
         )
         by_admin: dict = {}
@@ -1524,6 +1525,24 @@ def task_llm_monster_auto_cycle() -> dict:
         return {"status": "error", "error": str(e)}
 
 
+def task_llm_monster_live_monitor() -> dict:
+    """Queue due live-round observations; the shared LLM worker executes them."""
+    import services_llm_monster
+    try:
+        return {"status": "ok", "servers": services_llm_monster.enqueue_live_analyses()}
+    except Exception as e:  # noqa: BLE001
+        return {"status": "error", "error": str(e)}
+
+
+def task_process_monster_round_reports() -> dict:
+    """Analyze newly received round reports independently of auto-cycle settings."""
+    import services_llm_monster
+    try:
+        return {"status": "ok", "reports": services_llm_monster.process_pending_round_reports()}
+    except Exception as e:  # noqa: BLE001
+        return {"status": "error", "error": str(e)}
+
+
 def task_process_monster_llm_runs() -> dict:
     """Execute queued manual monster LLM runs (async: POST returns 202, the
     UI polls runtime). Runs in a worker thread, never in a request."""
@@ -1733,8 +1752,8 @@ def _start_scheduler():
         timeout=None,
     )
 
-    # Voice profile backfill/processing is deliberately disabled by config
-    # until historical mappings and audio quality have been reviewed.
+    # Voice profile extraction is dispatched to external workers; this
+    # scheduler only manages durable jobs and applies returned packages.
     scheduler.register_periodic(
         task_process_voice_profiles,
         interval_secs=60,
@@ -1939,6 +1958,22 @@ def _start_scheduler():
         task_id="llm_monster_auto_cycle",
     )
 
+    scheduler.register_periodic(
+        task_llm_monster_live_monitor,
+        interval_secs=30,
+        priority=Priority.BACKGROUND,
+        task_id="llm_monster_live_monitor",
+    )
+
+    # Every submitted round gets its own durable LLM conclusion, even when
+    # automatic adaptation is disabled or the assistant is in learning mode.
+    scheduler.register_periodic(
+        task_process_monster_round_reports,
+        interval_secs=5 * 60,
+        priority=Priority.BACKGROUND,
+        task_id="llm_monster_round_reports",
+    )
+
     # Мониторинг производительности: BACKGROUND priority — сам по себе не
     # должен ни на миг задержать обслуживание запросов (см. services_perf_
     # monitor.py). Every 30s — тот же порядок, что и у liveness-проверки
@@ -2015,6 +2050,8 @@ def _start_scheduler():
     scheduler.start()
     from services_ai_dossier_worker import start_ai_dossier_worker
     start_ai_dossier_worker()
+    from services_llm_worker import start_ai_llm_worker
+    start_ai_llm_worker()
     logger.info("[Workers] All periodic tasks registered and scheduler started")
 
 
@@ -2074,6 +2111,8 @@ def start_all_workers() -> None:
         scheduler.start()
         from services_ai_dossier_worker import start_ai_dossier_worker
         start_ai_dossier_worker()
+        from services_llm_worker import start_ai_llm_worker
+        start_ai_llm_worker()
     from services_logs import start_log_worker
     start_log_worker()
     from services_playtime_stats import start_playtime_stats_worker

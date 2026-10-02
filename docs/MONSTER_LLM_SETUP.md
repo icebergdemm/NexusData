@@ -37,7 +37,7 @@ AI_DOSSIER_TLS_CA_FILE=config/koboldcpp-ca.pem
 ```env
 # Транспорт — общий агрегатор (те же ключи, что у досье, см. раздел 1).
 MONSTER_LLM_MODEL=qwen3-4b-instruct
-MONSTER_LLM_TIMEOUT_SECONDS=90
+MONSTER_LLM_TIMEOUT_SECONDS=240
 MONSTER_LLM_TEMPERATURE=0.15
 MONSTER_LLM_TOP_P=0.8
 MONSTER_LLM_AUTO_INTERVAL_MINUTES=0   # 0 = только ручные запуски

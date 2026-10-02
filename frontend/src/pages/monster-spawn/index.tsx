@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Bar, Line } from "react-chartjs-2"
 import {
-  Activity, Anchor, Ban, Bot, BrainCircuit, Check, ChevronRight,
-  Copy, Crosshair, Eye, EyeOff, Files, Filter, FlaskConical, Gauge, Info, Layers, LocateFixed,
+  Activity, AlertTriangle, Anchor, Ban, Bot, BrainCircuit, CalendarDays, Check, ChevronRight, Clock3,
+  Copy, Crosshair, Download, Eye, EyeOff, Files, Filter, FlaskConical, Gauge, Info, Layers, LocateFixed,
   MapPin, Pencil, Plus, Radar, Save, Search, ShipWheel, Skull, SlidersHorizontal, Sparkles,
   Target, Trash2, TrendingDown, TrendingUp, Wand2, X, Zap,
 } from "lucide-react"
@@ -76,9 +76,122 @@ function Metric({ icon: Icon, label, value, detail, tone = "primary" }: { icon: 
   </Card>
 }
 
+const reportStatus = (report: RoundReport) => ({
+  label: report.analysis_status === "succeeded" ? "Анализ готов" : report.analysis_status === "running" ? "Анализируется" : report.analysis_status === "failed" ? "Ошибка анализа" : "Ожидает анализа",
+  variant: report.analysis_status === "failed" ? "destructive" as const : report.analysis_status === "succeeded" ? "default" as const : "secondary" as const,
+})
+
+const roundSummaryFields = [
+  ["total_waves_spawned", "Волн за раунд", "count"],
+  ["unresolved_waves", "Не завершено", "count"],
+  ["total_crew_deaths", "Потери экипажа", "count"],
+  ["total_sub_health_loss", "Потеря прочности", "percent"],
+  ["average_performance", "Средняя эффективность", "ratio"],
+] as const
+
+const waveFieldLabels: Record<string, string> = {
+  spawn_reason: "Причина", outcome: "Исход", fate: "Судьба монстров", engagement_seconds: "Столкновение, сек.",
+  repel_seconds: "Время отражения, сек.", expected_repel_seconds: "Ожидалось, сек.", crew_deaths: "Потери экипажа",
+  sub_health_loss: "Потеря прочности", effective_difficulty: "Сложность", performance: "Эффективность",
+  unresolved: "Не завершена", resolved_by_timeout: "Завершена по таймауту", pace_ratio_at_spawn: "Темп раунда",
+  progress_at_spawn: "Прогресс уровня", players_alive_at_start: "Игроков в начале", players_alive_at_end: "Игроков в конце",
+  crew_alive_at_start: "Экипаж в начале", crew_alive_at_end: "Экипаж в конце", is_idle_horde: "Орда простоя",
+}
+
+const outcomeLabels: Record<string, string> = {
+  repelled: "Отбита", unresolved: "Не завершена", timeout_engaged: "Отбита по таймауту", bypassed: "Обойдена", afk: "Без контакта",
+}
+
+function reportDateLabel(value?: string, options?: Intl.DateTimeFormatOptions) {
+  if (!value || Number.isNaN(Date.parse(value))) return "Дата неизвестна"
+  return new Intl.DateTimeFormat("ru-RU", options ?? { day: "numeric", month: "long", year: "numeric" }).format(new Date(value))
+}
+
+function RoundReportRow({ report, onOpen }: { report: RoundReport; onOpen: (report: RoundReport) => void }) {
+  const status = reportStatus(report)
+  const waves = Number(report.summary?.total_waves_spawned ?? report.waves?.length ?? 0)
+  const deaths = Number(report.summary?.total_crew_deaths ?? 0)
+  return <div className="grid gap-3 rounded-xl border bg-card px-3 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:px-4">
+    <div className="min-w-0 space-y-2">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="truncate text-sm font-semibold">{report.submarine_name || "Корабль не указан"}</span>
+        <Badge variant="outline" className="text-[10px]">{report.controller_mode === "learning" ? "Обучение" : "Контроллер"}</Badge>
+        <Badge variant={status.variant} className="text-[10px]">{status.label}</Badge>
+      </div>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        <span className="inline-flex items-center gap-1.5"><CalendarDays className="size-3.5" />{report.round_start_utc ? formatBrowserDate(report.round_start_utc) : "Дата неизвестна"}</span>
+        <span className="inline-flex items-center gap-1.5"><Clock3 className="size-3.5" />{Math.max(0, Math.round(Number(report.round_duration_seconds ?? 0) / 60))} мин</span>
+        <span>{Number.isFinite(waves) ? waves : report.waves?.length ?? 0} волн</span><span>{Number.isFinite(deaths) ? deaths : 0} потерь</span>
+        {report.events?.length ? <span>{report.events.length} событий</span> : null}
+      </div>
+    </div>
+    <Button size="sm" variant="outline" className="w-full sm:w-auto" onClick={() => onOpen(report)}>Подробнее <ChevronRight className="size-3.5" /></Button>
+  </div>
+}
+
+function RoundReportDetails({ report, server, retrying, onRetry, onDownload, onClose }: {
+  report: RoundReport
+  server: string
+  retrying: boolean
+  onRetry: (id: number) => void
+  onDownload: (report: RoundReport) => void
+  onClose: () => void
+}) {
+  const status = reportStatus(report)
+  const summary = report.summary ?? {}
+  const waves = report.waves ?? []
+  const events = report.events ?? []
+  return <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
+    <DialogContent className="flex max-h-[92vh] flex-col overflow-hidden p-0 sm:max-w-5xl">
+      <DialogHeader className="border-b px-6 py-5 pr-12">
+        <div className="flex flex-wrap items-center gap-2"><Badge variant={status.variant}>{status.label}</Badge><Badge variant="outline">{server}</Badge></div>
+        <DialogTitle className="mt-2 text-lg">{report.submarine_name || "Отчёт раунда"}</DialogTitle>
+        <DialogDescription>{report.round_start_utc ? formatBrowserDate(report.round_start_utc) : "Дата неизвестна"} · {report.controller_mode === "learning" ? "Обучение · ванильный спавн" : "Контроллер монстров"} · {Math.max(0, Math.round(Number(report.round_duration_seconds ?? 0) / 60))} мин</DialogDescription>
+      </DialogHeader>
+      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-4">
+        <section className="space-y-2">
+          <h3 className="text-sm font-semibold">Заключение LLM</h3>
+          {report.analysis_text ? <div className="whitespace-pre-wrap rounded-xl border border-primary/20 bg-primary/5 p-4 text-sm leading-relaxed">{report.analysis_text}</div> : report.analysis_error ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm"><span className="text-destructive">{report.analysis_error}</span>{report.id && <Button size="sm" variant="outline" disabled={retrying} onClick={() => onRetry(report.id!)}>Повторить анализ</Button>}</div> : <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">{report.analysis_status === "running" ? "Модель анализирует раунд…" : "Заключение пока не сформировано."}{report.analysis_status === "failed" && report.id && <Button className="ml-3" size="sm" variant="outline" disabled={retrying} onClick={() => onRetry(report.id!)}>Повторить анализ</Button>}</div>}
+        </section>
+        <section className="space-y-2">
+          <h3 className="text-sm font-semibold">Итоги раунда</h3>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">{roundSummaryFields.map(([key, label, format]) => {
+            const raw = summary[key]
+            const value = Number(raw)
+            const display = raw == null || !Number.isFinite(value) ? "—" : format === "count" ? String(Math.round(value)) : format === "percent" ? `${Math.round(value)}%` : value.toFixed(2)
+            return <div key={key} className="rounded-xl border bg-muted/20 p-3"><div className="text-xs text-muted-foreground">{label}</div><div className="mt-1 text-lg font-semibold tabular-nums">{display}</div></div>
+          })}</div>
+        </section>
+        <section className="space-y-2">
+          <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-semibold">Волны <span className="font-normal text-muted-foreground">· {waves.length}</span></h3></div>
+          {waves.length ? <div className="space-y-2">{waves.map((wave, index) => {
+            const name = String(wave.wave_name ?? wave.name ?? `Волна ${index + 1}`)
+            const outcome = String(wave.outcome ?? "")
+            const monsters = isRecord(wave.monster_counts) ? Object.entries(wave.monster_counts).map(([species, count]) => `${species} × ${count}`).join(" · ") : ""
+            const fields = Object.entries(wave).filter(([key, value]) => waveFieldLabels[key] && value != null && key !== "outcome")
+            return <div key={String(wave.wave_id ?? index)} className="rounded-xl border p-3 sm:p-4">
+              <div className="flex flex-wrap items-center gap-2"><span className="font-medium">{name}</span>{outcome && <Badge variant={outcome === "unresolved" ? "destructive" : "secondary"}>{outcomeLabels[outcome] ?? outcome}</Badge>}</div>
+              {monsters && <p className="mt-1 text-xs text-muted-foreground">{monsters}</p>}
+              <div className="mt-3 grid gap-x-4 gap-y-2 text-xs sm:grid-cols-2 lg:grid-cols-3">{fields.map(([key, value]) => <div key={key} className="flex justify-between gap-3 border-b border-border/50 pb-1"><span className="text-muted-foreground">{waveFieldLabels[key]}</span><span className="text-right font-medium">{typeof value === "boolean" ? (value ? "Да" : "Нет") : typeof value === "number" && key.includes("seconds") ? `${value.toFixed(1)} с` : typeof value === "number" ? value.toFixed(2) : String(value)}</span></div>)}</div>
+            </div>
+          })}</div> : <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">За раунд волн не зафиксировано.</div>}
+        </section>
+        <details className="rounded-xl border p-3">
+          <summary className="cursor-pointer text-sm font-medium">Хронология событий <span className="text-muted-foreground">· {events.length}</span></summary>
+          {events.length ? <div className="mt-3 max-h-72 overflow-y-auto rounded-lg bg-muted/20 px-3"><div className="divide-y divide-border/60">{events.map((event, index) => <div key={index} className="grid gap-1 py-2 text-xs sm:grid-cols-[5rem_7rem_minmax(0,1fr)] sm:items-start"><span className="font-mono text-muted-foreground">{Number(event.time_seconds ?? 0).toFixed(1)} с</span><span className="font-medium">{[event.direction, event.kind].filter(Boolean).join(" · ") || "Событие"}</span><span className="break-all text-muted-foreground">{event.payload || "—"}</span></div>)}</div></div> : <p className="mt-3 text-xs text-muted-foreground">Событий нет.</p>}
+        </details>
+      </div>
+      <div className="flex flex-wrap justify-end gap-2 border-t px-6 py-4"><Button variant="outline" onClick={() => onDownload(report)}><Download className="size-4" />Скачать JSON</Button><Button onClick={onClose}>Закрыть</Button></div>
+    </DialogContent>
+  </Dialog>
+}
+
 function RoundReports({ reports, server }: { reports: RoundReport[]; server: string }) {
   const queryClient = useQueryClient()
-  const [visibleCount, setVisibleCount] = useState(20)
+  const [allReportsOpen, setAllReportsOpen] = useState(false)
+  const [selectedReport, setSelectedReport] = useState<RoundReport | null>(null)
+  const [reportSearch, setReportSearch] = useState("")
+  const [statusFilter, setStatusFilter] = useState("all")
   const retry = useMutation({
     mutationFn: (id: number) => monsterSpawnApi.retryRoundAnalysis(server, id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["monster-spawn-reports", server] }),
@@ -93,11 +206,71 @@ function RoundReports({ reports, server }: { reports: RoundReport[]; server: str
     link.click()
     URL.revokeObjectURL(url)
   }
-  return <Card className="overflow-hidden py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="flex items-center gap-2 text-sm"><Files className="size-4 text-info" /> Подробные отчёты раундов</CardTitle><CardDescription className="text-xs">Полный timeline решений, обмена с сайтом, спавнов, исходов и адаптивности. JSON скачивается без потери данных.</CardDescription></CardHeader><CardContent className="space-y-2 p-4">
-    {!reports.length && <div className="rounded-xl border border-dashed p-5 text-center text-xs text-muted-foreground">Отчёты появятся после завершения раунда</div>}
-    {reports.slice(-visibleCount).reverse().map((report, index) => <details key={String(report.id ?? report.round_start_utc ?? index)} className="rounded-xl border bg-muted/10 p-3 text-xs"><summary className="flex cursor-pointer list-none flex-wrap items-center gap-2"><span className="font-medium">{report.submarine_name ?? "Корабль не указан"}</span>{report.controller_mode === "learning" && <Badge variant="outline">Обучение · ванильный спавн</Badge>}<Badge variant="outline">{report.round_start_utc ? formatBrowserDate(report.round_start_utc) : "без даты"}</Badge><span className="text-muted-foreground">{Math.round(Number(report.round_duration_seconds ?? 0) / 60)} мин · волн: {Array.isArray(report.waves) ? report.waves.length : 0} · событий: {Array.isArray(report.events) ? report.events.length : 0}</span><Badge variant={report.analysis_status === "failed" ? "destructive" : "secondary"}>{report.analysis_status === "succeeded" ? "LLM: готово" : report.analysis_status === "running" ? "LLM: анализирует" : report.analysis_status === "failed" ? "LLM: ошибка" : "LLM: ожидает"}</Badge><Button className="ml-auto" size="sm" variant="outline" onClick={(event) => { event.preventDefault(); download(report) }}>JSON</Button></summary><div className="mt-3 space-y-3 border-t pt-3">{report.analysis_text && <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 leading-relaxed">{report.analysis_text}</div>}{report.analysis_error && <div className="flex items-center gap-2 text-destructive">{report.analysis_error}{report.id && <Button size="sm" variant="outline" disabled={retry.isPending} onClick={() => retry.mutate(report.id!)}>Повторить анализ</Button>}</div>}<div className="grid gap-2 sm:grid-cols-4">{Object.entries(report.summary ?? {}).map(([key, value]) => <div key={key} className="rounded-lg bg-background/70 p-2"><div className="text-[10px] text-muted-foreground">{key}</div><div className="font-mono">{String(value)}</div></div>)}</div><div className="space-y-2">{(report.waves ?? []).map((wave, waveIndex) => <div key={waveIndex} className="rounded-lg border bg-background p-3"><div className="font-medium">{String(wave.wave_name ?? wave.name ?? `Волна ${waveIndex + 1}`)}</div><div className="mt-1 grid gap-x-4 gap-y-1 text-muted-foreground sm:grid-cols-3">{Object.entries(wave).filter(([key]) => key !== "wave_name" && key !== "name").map(([key, value]) => <div key={key}><span className="font-medium text-foreground">{key}:</span> {typeof value === "object" ? JSON.stringify(value) : String(value)}</div>)}</div></div>)}</div><details><summary className="cursor-pointer text-muted-foreground">Хронология событий · {(report.events ?? []).length}</summary><div className="mt-2 max-h-72 overflow-auto rounded-lg bg-background p-2 font-mono text-[10px]">{(report.events ?? []).map((event, eventIndex) => <div key={eventIndex} className="border-b border-border/50 py-1 last:border-0"><span className="text-muted-foreground">{Number(event.time_seconds ?? 0).toFixed(1)}s</span> <b>{event.direction}</b> {event.kind} <span className="break-all text-muted-foreground">{event.payload}</span></div>)}</div></details></div></details>)}
-    {reports.length > visibleCount && <Button variant="outline" size="sm" onClick={() => setVisibleCount((count) => count + 20)}>Показать ещё 20 раундов</Button>}
-  </CardContent></Card>
+  const sortedReports = reports.slice().sort((a, b) => {
+    const dateA = Date.parse(a.round_start_utc ?? "") || 0
+    const dateB = Date.parse(b.round_start_utc ?? "") || 0
+    return dateB - dateA || Number(b.id ?? 0) - Number(a.id ?? 0)
+  })
+  const visibleReports = sortedReports.filter((report) => {
+    const query = reportSearch.trim().toLocaleLowerCase("ru")
+    const matchesQuery = !query || [report.submarine_name, report.round_start_utc, report.controller_mode, report.analysis_text]
+      .some((value) => String(value ?? "").toLocaleLowerCase("ru").includes(query))
+    const matchesStatus = statusFilter === "all" || report.analysis_status === statusFilter || (statusFilter === "pending" && !report.analysis_status)
+    return matchesQuery && matchesStatus
+  })
+  const groupedReports = visibleReports.reduce<Array<{ key: string; label: string; reports: RoundReport[] }>>((groups, report) => {
+    const date = report.round_start_utc ? new Date(report.round_start_utc) : null
+    const key = date && !Number.isNaN(date.getTime()) ? `${date.getFullYear()}-${date.getMonth()}` : "unknown"
+    let group = groups[groups.length - 1]
+    if (!group || group.key !== key) {
+      group = { key, label: date && !Number.isNaN(date.getTime()) ? reportDateLabel(report.round_start_utc, { month: "long", year: "numeric" }) : "Без даты", reports: [] }
+      groups.push(group)
+    }
+    group.reports.push(report)
+    return groups
+  }, [])
+  const openDetails = (report: RoundReport, fromArchive = false) => {
+    if (fromArchive) setAllReportsOpen(false)
+    setSelectedReport(report)
+  }
+  const latest = sortedReports[0]
+  return <>
+    <Card className="overflow-hidden py-0">
+      <CardHeader className="border-b bg-muted/20 px-4 py-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-sm"><Files className="size-4 text-info" /> Отчёты раундов · {server}</CardTitle>
+            <CardDescription className="text-xs">Заключения модели и сводка по каждому завершённому раунду.</CardDescription>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => setAllReportsOpen(true)} disabled={!reports.length}>Все отчёты · {reports.length}</Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2 p-4">
+        {latest ? <>
+          <div className="mb-3 flex items-center gap-2 text-xs font-medium text-muted-foreground"><CalendarDays className="size-3.5" />Последний завершённый раунд</div>
+          <RoundReportRow report={latest} onOpen={openDetails} />
+          {sortedReports.length > 1 && <div className="space-y-2 pt-3"><div className="text-xs font-medium text-muted-foreground">Предыдущие раунды</div>{sortedReports.slice(1, 5).map((report, index) => <RoundReportRow key={String(report.id ?? report.round_start_utc ?? index)} report={report} onOpen={openDetails} />)}</div>}
+          {sortedReports.length > 5 && <div className="pt-1 text-center text-xs text-muted-foreground">Ещё {sortedReports.length - 5} отчётов в архиве</div>}
+        </> : <div className="rounded-xl border border-dashed p-5 text-center text-sm text-muted-foreground">Для {server} отчётов пока нет. Они появятся после завершения раунда.</div>}
+      </CardContent>
+    </Card>
+    <Dialog open={allReportsOpen} onOpenChange={setAllReportsOpen}>
+      <DialogContent className="flex max-h-[90vh] flex-col overflow-hidden sm:max-w-4xl">
+        <DialogHeader>
+          <DialogTitle>Архив отчётов · {server}</DialogTitle>
+          <DialogDescription>{reports.length} сохранённых раундов. Список сгруппирован по месяцам.</DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-wrap gap-2 border-y py-3">
+          <Input className="min-w-48 flex-1" value={reportSearch} onChange={(event) => setReportSearch(event.target.value)} placeholder="Найти корабль, дату или заключение" />
+          <Select value={statusFilter} onValueChange={setStatusFilter}><SelectTrigger className="w-full sm:w-48"><SelectValue placeholder="Статус анализа" /></SelectTrigger><SelectContent><SelectItem value="all">Все статусы</SelectItem><SelectItem value="succeeded">Анализ готов</SelectItem><SelectItem value="pending">Ожидает анализа</SelectItem><SelectItem value="running">Анализируется</SelectItem><SelectItem value="failed">Ошибка анализа</SelectItem></SelectContent></Select>
+        </div>
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto pr-1">
+          {groupedReports.length ? groupedReports.map((group) => <section key={group.key} className="space-y-2"><h3 className="sticky top-0 z-10 border-b bg-background/95 py-2 text-xs font-semibold capitalize text-muted-foreground backdrop-blur">{group.label} <span className="font-normal">· {group.reports.length}</span></h3>{group.reports.map((report, index) => <RoundReportRow key={String(report.id ?? report.round_start_utc ?? index)} report={report} onOpen={(value) => openDetails(value, true)} />)}</section>) : <div className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">По выбранным условиям отчётов нет.</div>}
+        </div>
+      </DialogContent>
+    </Dialog>
+    {selectedReport && <RoundReportDetails report={selectedReport} server={server} retrying={retry.isPending} onRetry={(id) => retry.mutate(id)} onDownload={download} onClose={() => setSelectedReport(null)} />}
+  </>
 }
 
 function ChartCard({ title, description, children, className = "" }: { title: string; description?: string; children: React.ReactNode; className?: string }) {
@@ -406,16 +579,17 @@ function ActiveWaveCard({ wave, override, onToggleNonBlocking, onOpenOverride }:
   const modified = wave.modifications?.length > 0
   const engaged = wave.engaged === true
   const bypassed = wave.bypassed === true
-  // in_combat_now приходит с новых снапшотов; для старых — engaged.
-  const inCombat = wave.in_combat_now ?? engaged
   const blocking = wave.blocking === true && !bypassed
+  const trackingTimeout = Math.max(wave.tracking_timeout_seconds ?? 600, 1)
+  const timeoutProgress = Math.max(0, Math.min(wave.elapsed_seconds / trackingTimeout, 1))
+  const timeoutRemaining = Math.max(0, Math.ceil(trackingTimeout - wave.elapsed_seconds))
+  const timerColor = `hsl(${120 * (1 - timeoutProgress)} 82% 50%)`
   return <div className="space-y-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-xs">
     <div className="flex flex-wrap items-center gap-2">
       <Radar className="size-4 text-destructive" />
       <span className="font-semibold">{wave.wave_name}</span>
       <Badge variant="outline" className="text-[10px]">ID {wave.wave_id}</Badge>
       <Badge variant="secondary" className="text-[10px]">{reasonLabel(wave.spawn_reason)}</Badge>
-      {wave.struggling && <Badge variant="destructive" className="text-[10px]">экипаж не справляется</Badge>}
       {bypassed && <Badge variant="outline" className="text-[10px] text-warning border-warning/40">обойдена — бой окончен</Badge>}
       {wave.non_blocking ? <Badge variant="outline" className="text-[10px] text-muted-foreground">неблокирующая</Badge>
         : blocking ? <Badge variant="outline" className="text-[10px] text-success border-success/40">блокирует спавн</Badge>
@@ -424,10 +598,14 @@ function ActiveWaveCard({ wave, override, onToggleNonBlocking, onOpenOverride }:
       {engaged && wave.damage_taken != null && wave.damage_taken > 0 && <Badge variant="outline" className="text-[10px] text-info">урон монстрам {wave.damage_taken.toFixed(0)}</Badge>}
     </div>
     <div className="text-muted-foreground">Состав: <span className="text-foreground">{monsterCountsText(wave.monster_counts)}</span>{wave.spawn_scheme && <span> · схема <b className="text-foreground">{wave.spawn_scheme}</b>{wave.spawn_zone ? ` (${wave.spawn_zone})` : ""}</span>}</div>
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-      <div><div className="font-mono text-sm">{Math.round(wave.elapsed_seconds)}с</div><div className="text-[10px] text-muted-foreground">{inCombat ? "в бою" : engaged ? "бой завершён" : "без боя"} (ожидалось {Math.round(wave.expected_repel_seconds)}с)</div></div>
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+      <div>
+        <div className="font-mono text-sm transition-colors duration-500" style={{ color: timerColor }}>{Math.round(wave.elapsed_seconds)}с</div>
+        <div className="text-[10px] text-muted-foreground">Существует уже:</div>
+        <div className="mt-1 h-1 overflow-hidden rounded-full bg-muted/60"><div className="h-full rounded-full transition-[width] duration-500" style={{ width: `${timeoutProgress * 100}%`, background: "linear-gradient(90deg, #22c55e, #eab308, #ef4444)" }} /></div>
+        <div className="mt-1 text-[10px] text-muted-foreground">таймаут через {timeoutRemaining}с</div>
+      </div>
       <div><div className="font-mono text-sm">{wave.monsters_alive}/{wave.monsters_total}</div><div className="text-[10px] text-muted-foreground">живых монстров</div></div>
-      <div><div className="font-mono text-sm">{Math.round(wave.engagement_seconds)}с</div><div className="text-[10px] text-muted-foreground">вовлечённость</div></div>
       <div><div className="font-mono text-sm">{wave.effective_difficulty.toFixed(1)}</div><div className="text-[10px] text-muted-foreground">сложность</div></div>
     </div>
     {wave.distance_to_sub_meters != null && <div className="text-[11px] text-muted-foreground">Дистанция до корабля: <span className="font-mono text-foreground">{wave.distance_to_sub_meters.toFixed(0)} м</span>{wave.min_distance_meters != null && <> (минимум {wave.min_distance_meters.toFixed(0)} м)</>}</div>}
@@ -523,10 +701,9 @@ function RecentWaveCard({ wave }: { wave: RecentWaveTelemetry }) {
       <Badge variant="secondary" className="text-[10px]">{reasonLabel(wave.spawn_reason)}</Badge>
     </div>
     <div className="text-muted-foreground">Состав: <span className="text-foreground">{monsterCountsText(wave.monster_counts)}</span></div>
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
       <div><div className="font-mono text-sm">{Math.round(wave.repel_seconds)}с</div><div className="text-[10px] text-muted-foreground">зачистка (ожидалось {Math.round(wave.expected_repel_seconds)}с)</div></div>
       <div><div className="font-mono text-sm">{wave.performance.toFixed(2)}</div><div className="text-[10px] text-muted-foreground">performance</div></div>
-      <div><div className="font-mono text-sm">{Math.round(wave.engagement_seconds)}с</div><div className="text-[10px] text-muted-foreground">вовлечённость</div></div>
       <div><div className="font-mono text-sm">{wave.crew_deaths}</div><div className="text-[10px] text-muted-foreground">потери экипажа</div></div>
       <div><div className="font-mono text-sm">{wave.sub_health_loss.toFixed(1)}%</div><div className="text-[10px] text-muted-foreground">урон лодке</div></div>
     </div>
@@ -683,105 +860,201 @@ function SchemeRow({ scheme, index, onEdit, onDelete, overrideTag }: {
   </div>
 }
 
+function LLMRunDialog({ record, onOpenChange, onApply, applying }: {
+  record: LLMRunRecord | null
+  onOpenChange: (open: boolean) => void
+  onApply: (runId: string) => void
+  applying: boolean
+}) {
+  const result = record?.result
+  const changes = result?.proposed_changes ?? []
+  return <Dialog open={record !== null} onOpenChange={onOpenChange}>
+    {record && <DialogContent className="flex max-h-[90vh] flex-col overflow-hidden p-0 sm:max-w-3xl">
+      <DialogHeader className="border-b bg-muted/20 px-6 py-5 pr-12">
+        <div className="flex flex-wrap items-center gap-2"><Badge variant={record.status === "succeeded" ? "default" : record.status === "failed" ? "destructive" : "secondary"}>{record.status}</Badge><Badge variant="outline">{record.mode}</Badge><Badge variant="secondary">{record.source === "live" ? "Наблюдение" : record.source === "auto" ? "Автоцикл" : "Вручную"}</Badge></div>
+        <DialogTitle className="mt-2">Результат LLM-цикла</DialogTitle>
+        <DialogDescription>{formatBrowserDate(record.requested_at)}{record.duration_ms != null ? ` · ${Math.round(record.duration_ms / 1000)} сек.` : ""}{record.confidence != null ? ` · уверенность ${Math.round(record.confidence * 100)}%` : ""}</DialogDescription>
+      </DialogHeader>
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4">
+        {record.instruction && <div className="rounded-xl border bg-muted/20 p-3 text-sm"><div className="mb-1 text-xs font-medium text-muted-foreground">Инструкция оператора</div>{record.instruction}</div>}
+        {record.error_message && <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{record.error_message}</div>}
+        {result?.situation && <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 text-sm leading-relaxed">{result.situation}</div>}
+        {result?.scores && <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">{([
+          ["Экипаж", result.scores.crew_effectiveness], ["Монстры", result.scores.monster_strength],
+          ["Давление волн", result.scores.wave_pressure], ["Корабль", result.scores.ship_efficiency],
+        ] as const).map(([label, score]) => <div key={label} className="rounded-xl border bg-muted/20 p-3"><div className="text-xs text-muted-foreground">{label}</div><div className="mt-1 text-xl font-semibold">{score == null ? "—" : `${Math.round(score)}/100`}</div></div>)}</div>}
+        {result?.scores?.basis && <p className="text-xs text-muted-foreground">Основание оценок: {result.scores.basis}</p>}
+        {result?.live_proposal && <div className="rounded-xl border p-3 text-sm"><p>Действие в раунде: {result.live_proposal.action === "spawn" ? "Добавить волну" : result.live_proposal.action === "hold" ? "Пауза спавна" : "Сохранить текущий темп"}</p><p className="mt-1 text-xs text-muted-foreground">{result.live_proposal.evidence.join(" · ")}</p>{result.live_execution && <p className="mt-2 text-xs">{result.live_execution.status === "planned" ? "План передан плагину; исполнение зависит от текущего состояния." : `Действие не применено: ${result.live_execution.reason ?? result.live_execution.status}`}</p>}</div>}
+        {result?.findings?.length ? <div className="space-y-2 rounded-xl border p-3"><p className="text-sm font-medium">Самопроверка</p>{result.findings.map((finding, index) => <div key={index} className="text-sm"><p>{finding.detail}</p><p className="text-xs text-muted-foreground">{finding.evidence}</p></div>)}</div> : null}
+        {result?.crew_summary && <section className="space-y-2"><h3 className="text-sm font-semibold">Эффективность экипажа</h3><div className="rounded-xl border p-4 text-sm leading-relaxed">{result.crew_summary}</div></section>}
+        {(result?.recommendations?.length ?? 0) > 0 && <section className="space-y-2"><h3 className="text-sm font-semibold">Рекомендации оператору</h3>{result!.recommendations!.map((item, index) => <div key={index} className="rounded-xl border bg-muted/10 p-3"><div className="font-medium">{item.title}</div><div className="mt-1 text-sm text-muted-foreground">{item.detail}</div></div>)}</section>}
+        {changes.length > 0 && <section className="space-y-2"><h3 className="text-sm font-semibold">Предлагаемые изменения</h3>{changes.map((change, index) => <div key={index} className="grid gap-1 rounded-xl border p-3 text-sm sm:grid-cols-[minmax(0,1fr)_auto]"><span className="font-mono">{change.key}</span><span>{String(change.old_value ?? "—")} → {String(change.new_value)}</span>{change.reason && <span className="text-muted-foreground sm:col-span-2">{change.reason}</span>}</div>)}</section>}
+        {(result?.applied_changes?.length ?? 0) > 0 && <section className="space-y-2"><h3 className="text-sm font-semibold">Применено</h3>{result!.applied_changes!.map((change, index) => <div key={index} className="rounded-xl border border-success/30 bg-success/5 p-3 text-sm"><span className="font-mono">{change.key}: {String(change.old_value ?? "—")} → {String(change.new_value)}</span>{change.reason && <p className="mt-1 text-muted-foreground">{change.reason}</p>}</div>)}</section>}
+        {(result?.spawn_requests?.length ?? 0) > 0 && <section className="space-y-2"><h3 className="text-sm font-semibold">Планы спавна</h3>{result!.spawn_requests!.map((item, index) => <div key={index} className="rounded-xl border p-3 text-sm">{item.species} × {item.count} · {item.position_hint}{item.reason ? ` — ${item.reason}` : ""}</div>)}</section>}
+        {(result?.rejected?.length ?? 0) > 0 && <section className="space-y-2"><h3 className="text-sm font-semibold text-warning">Отклонено проверкой</h3>{result!.rejected!.map((item, index) => <div key={index} className="rounded-xl border border-warning/30 bg-warning/5 p-3 text-sm">{item}</div>)}</section>}
+        {result?.live_metrics && <details className="rounded-xl border p-3"><summary className="cursor-pointer text-sm font-medium">Метрики живого снимка</summary><pre className="mt-3 max-h-72 overflow-auto rounded-lg bg-muted/30 p-3 text-xs">{JSON.stringify(result.live_metrics, null, 2)}</pre></details>}
+      </div>
+      <DialogFooter className="border-t px-6 py-4 sm:flex-row">
+        {changes.length > 0 && record.status === "succeeded" && <Button disabled={applying} onClick={() => onApply(record.run_id)}><Check className="size-4" />Применить предложения</Button>}
+        <Button variant="outline" onClick={() => onOpenChange(false)}>Закрыть</Button>
+      </DialogFooter>
+    </DialogContent>}
+  </Dialog>
+}
+
 function LLMPanel({ server, reports, learning }: { server: string; reports: RoundReport[]; learning: boolean }) {
   const queryClient = useQueryClient()
   const [instruction, setInstruction] = useState("")
   const [mode, setMode] = useState<"analyze" | "apply" | "spawn">("analyze")
+  const [selectedRun, setSelectedRun] = useState<LLMRunRecord | null>(null)
   const runtime = useQuery({ queryKey: ["monster-spawn-llm", server], queryFn: () => monsterSpawnApi.llmRuntime(server), refetchInterval: 10000 })
-  // Durable run records: полный результат больше не в AppSetting (он
-  // обрезался 2000-символьным лимитом и «терялся»), а в таблице циклов.
   const runsQuery = useQuery({ queryKey: ["monster-spawn-llm-runs", server], queryFn: () => monsterSpawnApi.llmRuns(server, 30), refetchInterval: 5000 })
   const saveRuntime = useMutation({
-    mutationFn: (body: Partial<Pick<LLMRuntime, "enabled" | "auto_apply" | "auto_interval_minutes">>) => monsterSpawnApi.updateLLMRuntime(server, body),
+    mutationFn: (body: Partial<Pick<LLMRuntime, "enabled" | "auto_apply" | "auto_interval_minutes" | "live_analysis_enabled" | "live_control_enabled" | "live_analysis_interval_seconds">>) => monsterSpawnApi.updateLLMRuntime(server, body),
     onSuccess: () => { toast.success("Настройки ассистента обновлены"); queryClient.invalidateQueries({ queryKey: ["monster-spawn-llm", server] }) },
     onError: (error: Error) => toast.error(error.message),
   })
   const run = useMutation({
     mutationFn: () => monsterSpawnApi.runLLM(server, { mode, instruction: instruction.trim() || undefined }),
-    onSuccess: () => { toast.success("Цикл поставлен в очередь — результат появится ниже"); queryClient.invalidateQueries({ queryKey: ["monster-spawn-llm", server] }); queryClient.invalidateQueries({ queryKey: ["monster-spawn-llm-runs", server] }) },
+    onSuccess: () => { toast.success("Цикл поставлен в очередь"); queryClient.invalidateQueries({ queryKey: ["monster-spawn-llm", server] }); queryClient.invalidateQueries({ queryKey: ["monster-spawn-llm-runs", server] }) },
+    onError: (error: Error) => toast.error(error.message),
+  })
+  const cancelRun = useMutation({
+    mutationFn: (runId: string) => monsterSpawnApi.cancelLLMRun(server, runId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["monster-spawn-llm", server] })
+      queryClient.invalidateQueries({ queryKey: ["monster-spawn-llm-runs", server] })
+      queryClient.invalidateQueries({ queryKey: ["ai-center-task-log"] })
+      queryClient.invalidateQueries({ queryKey: ["ai-llm-queue"] })
+      toast.success("LLM-цикл отменён")
+    },
     onError: (error: Error) => toast.error(error.message),
   })
   const applyProposal = useMutation({
     mutationFn: (runId: string) => monsterSpawnApi.applyProposal(server, runId),
-    onSuccess: () => { toast.success("Предложенные настройки применены"); queryClient.invalidateQueries({ queryKey: ["monster-spawn", server] }) },
+    onSuccess: () => { toast.success("Предложенные настройки применены"); setSelectedRun(null); queryClient.invalidateQueries({ queryKey: ["monster-spawn", server] }) },
     onError: (error: Error) => toast.error(error.message),
   })
 
   const r = runtime.data?.runtime
   const deployment = runtime.data?.deployment
-  const records: LLMRunRecord[] = runsQuery.data?.runs ?? []
+  const records = runsQuery.data?.runs ?? []
   const last = records[0] ?? null
   const latestProposal = records.find((record) => record.source === "auto" && record.instruction?.startsWith("round-report:"))
-    ?? records.find((record) => record.status === "succeeded" && (record.result?.proposed_changes?.length ?? 0) > 0)
+    ?? records.find((record) => record.source !== "live" && record.status === "succeeded" && (record.result?.proposed_changes?.length ?? 0) > 0)
   const queued = r?.pending_run ?? null
   const active = r?.active_run ?? null
   const busy = run.isPending || queued !== null || active !== null
+  const statusText = (status: string) => status === "succeeded" ? "Готово" : status === "failed" ? "Ошибка" : status === "running" ? "Выполняется" : status === "queued" ? "В очереди" : "Отменено"
+  const statusVariant = (status: string) => status === "succeeded" ? "default" as const : status === "failed" ? "destructive" as const : "secondary" as const
 
-  return <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3">
-    <CardTitle className="flex items-center gap-2 text-sm"><Bot className="size-4 text-primary" /> LLM-ассистент</CardTitle>
-    <CardDescription className="text-xs">{deployment?.has_base_url ? `агрегатор: ${deployment.base_url} · модель: ${deployment.model} · t=${deployment.temperature}` : "Не настроен — задайте AI_DOSSIER_URL и AI_DOSSIER_API_KEY в .env (см. docs/MONSTER_LLM_SETUP.md)"}</CardDescription>
-  </CardHeader>
-    <CardContent className="space-y-4 p-4">
-      {learning && <div className="rounded-lg border border-info/30 bg-info/5 p-3 text-xs">Режим обучения: модель анализирует ванильные волны и предлагает настройки для будущего активного режима. Автоцикл не применяет изменения и не создаёт спавны.</div>}
-      <div className="grid gap-3 sm:grid-cols-3">
-        <div className="flex items-center justify-between gap-3 rounded-xl border bg-muted/10 p-3 text-xs"><span>Ассистент включён</span><Switch checked={r?.enabled === true} onCheckedChange={(value) => saveRuntime.mutate({ enabled: value })} /></div>
-        <div className="flex items-center justify-between gap-3 rounded-xl border bg-muted/10 p-3 text-xs"><span>Автоприменение</span><Switch checked={r?.auto_apply === true} onCheckedChange={(value) => saveRuntime.mutate({ auto_apply: value })} /></div>
-        <Label className="space-y-1 rounded-xl border bg-muted/10 p-3 text-xs"><span className="text-muted-foreground">Автоцикл, мин (0 = вручную)</span><Input type="number" min={0} max={1440} value={r?.auto_interval_minutes ?? 0} onChange={(event) => saveRuntime.mutate({ auto_interval_minutes: Math.max(0, Number(event.target.value) || 0) })} /></Label>
-      </div>
-      <div className="space-y-2">
-        <Label className="space-y-1 text-xs"><span className="text-muted-foreground">Промпт для LLM (необязательно; дополняет системный промпт анализа)</span><Textarea rows={3} maxLength={2000} value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder="Например: удели внимание длительным столкновениям и потерям экипажа" /></Label>
-        <div className="flex flex-wrap gap-2">
-          <Select value={mode} onValueChange={(value) => setMode(value as typeof mode)}><SelectTrigger className="w-56"><SelectValue /></SelectTrigger><SelectContent>
-            <SelectItem value="analyze">analyze · разбор и рекомендации</SelectItem>
-            <SelectItem value="apply">apply · применить настройки</SelectItem>
-            <SelectItem value="spawn">spawn · настройки + спавн</SelectItem>
-          </SelectContent></Select>
-          <Button disabled={busy || !runtime.data?.endpoint_configured} onClick={() => run.mutate()}><FlaskConical className="size-4" /> {active ? "Модель думает…" : queued ? "В очереди…" : run.isPending ? "Отправка…" : "Запустить LLM-цикл"}</Button>
+  return <div className="space-y-4">
+    <Card className="overflow-hidden border-primary/20 bg-gradient-to-br from-primary/10 via-card to-card py-0">
+      <CardContent className="flex flex-wrap items-center gap-4 p-5">
+        <div className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-primary/15 text-primary"><Bot className="size-6" /></div>
+        <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h2 className="text-lg font-semibold">LLM-ассистент</h2><Badge variant={runtime.data?.endpoint_configured ? "secondary" : "destructive"}>{runtime.data?.endpoint_configured ? "AI-центр подключён" : "Нет подключения"}</Badge></div><p className="mt-1 truncate text-sm text-muted-foreground">{deployment?.has_base_url ? `${deployment.model} · ${deployment.base_url}` : "Настройте агрегатор в AI-центре"}</p></div>
+        {last && <Button variant="outline" size="sm" onClick={() => setSelectedRun(last)}>Последний запуск <ChevronRight className="size-4" /></Button>}
+      </CardContent>
+    </Card>
+    {learning && <div className="flex items-start gap-3 rounded-xl border border-info/30 bg-info/5 p-4 text-sm"><Info className="mt-0.5 size-4 shrink-0 text-info" /><div><div className="font-medium">Режим обучения</div><p className="mt-1 text-muted-foreground">Анализируются ванильные волны. Предложения предназначены для будущего активного режима и не создают спавны.</p></div></div>}
+
+    <Tabs defaultValue="assistant" className="space-y-4">
+      <TabsList className="grid h-auto w-full grid-cols-3 rounded-xl border bg-muted/40 p-1"><TabsTrigger value="assistant" className="rounded-lg">Ассистент</TabsTrigger><TabsTrigger value="rounds" className="rounded-lg">Раунды · {reports.length}</TabsTrigger><TabsTrigger value="history" className="rounded-lg">История · {records.length}</TabsTrigger></TabsList>
+      <TabsContent value="assistant" className="space-y-4">
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(340px,.8fr)]">
+          <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="text-sm">Поведение ассистента</CardTitle><CardDescription className="text-xs">Автоматические изменения требуют явного включения автоприменения.</CardDescription></CardHeader><CardContent className="grid gap-3 p-4 sm:grid-cols-2">
+            <div className="flex items-center justify-between gap-3 rounded-xl border bg-muted/10 p-3 text-sm"><span>Ассистент включён</span><Switch checked={r?.enabled === true} onCheckedChange={(value) => saveRuntime.mutate({ enabled: value })} /></div>
+            <div className="flex items-center justify-between gap-3 rounded-xl border bg-muted/10 p-3 text-sm"><span>Автоприменение</span><Switch checked={r?.auto_apply === true} onCheckedChange={(value) => saveRuntime.mutate({ auto_apply: value })} /></div>
+            <Label className="space-y-2 rounded-xl border bg-muted/10 p-3 text-xs"><span className="text-muted-foreground">Автоцикл, минут · 0 — вручную</span><Input type="number" min={0} max={1440} value={r?.auto_interval_minutes ?? 0} onChange={(event) => saveRuntime.mutate({ auto_interval_minutes: Math.max(0, Number(event.target.value) || 0) })} /></Label>
+            <div className="flex items-center justify-between gap-3 rounded-xl border bg-muted/10 p-3 text-sm"><span>Наблюдение за раундом</span><Switch checked={r?.live_analysis_enabled === true} onCheckedChange={(value) => saveRuntime.mutate({ live_analysis_enabled: value })} /></div>
+            <div className="flex items-center justify-between gap-3 rounded-xl border bg-muted/10 p-3 text-sm"><span>LLM управляет волнами в раунде</span><Switch checked={r?.live_control_enabled === true} onCheckedChange={(value) => saveRuntime.mutate({ live_control_enabled: value })} /></div>
+            <Label className="space-y-2 rounded-xl border bg-muted/10 p-3 text-xs sm:col-span-2"><span className="text-muted-foreground">Пауза после анализа · 120–600 секунд</span><Input type="number" min={120} max={600} value={r?.live_analysis_interval_seconds ?? 180} onChange={(event) => saveRuntime.mutate({ live_analysis_interval_seconds: Math.max(120, Math.min(600, Number(event.target.value) || 180)) })} /></Label>
+            <p className="text-xs text-muted-foreground sm:col-span-2">LLM может добавить небольшую волну или приостановить спавн до двух минут. За АФК — только после 15 минут без наблюдаемой активности и прогресса, при исправной лодке и отсутствии боя. Устаревшие решения отменяются.</p>
+          </CardContent></Card>
+
+          <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="text-sm">Новый запуск</CardTitle><CardDescription className="text-xs">Анализирует настройки, телеметрию и не более 15 последних раундов.</CardDescription></CardHeader><CardContent className="space-y-3 p-4">
+            <Select value={mode} onValueChange={(value) => setMode(value as typeof mode)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="analyze">Анализ и рекомендации</SelectItem><SelectItem value="apply">Подготовить настройки</SelectItem><SelectItem value="spawn">Настройки и планы спавна</SelectItem></SelectContent></Select>
+            <Textarea rows={4} maxLength={2000} value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder="Дополнительная инструкция оператору…" />
+            <div className="flex flex-wrap items-center gap-2"><Button className="flex-1" disabled={busy || !runtime.data?.endpoint_configured} onClick={() => run.mutate()}><FlaskConical className="size-4" />{active ? "Ассистент работает…" : queued ? "Запуск в очереди…" : run.isPending ? "Отправка…" : "Запустить анализ"}</Button>{(queued || active) && <Button variant="outline" size="icon" title="Отменить запуск" onClick={() => cancelRun.mutate((active ?? queued)!.id)} disabled={cancelRun.isPending}><Ban className="size-4 text-destructive" /></Button>}</div>
+            {(queued || active) && <p className="text-xs text-muted-foreground">{active ? `Запущен ${formatBrowserDate(active.started_at)} · попытка ${active.attempts}` : `Ожидает в общей очереди с ${formatBrowserDate(queued!.requested_at)}`}</p>}
+            {!runtime.data?.endpoint_configured && <p className="text-xs text-destructive">Проверьте подключение к агрегатору в AI-центре.</p>}
+          </CardContent></Card>
         </div>
-        {(queued || active) && <div className="text-[11px] text-muted-foreground">
-          {active ? `Выполняется ${active.mode} (запущен ${active.started_at.slice(0, 16).replace("T", " ")}, попытка ${active.attempts}) — страница опрашивает статус, её можно закрыть.` : `В очереди ${queued!.mode} (запрошен ${queued!.requested_at.slice(0, 16).replace("T", " ")}) — выполняется воркером, результат появится ниже.`}
-        </div>}
-      </div>
-      <div className="rounded-xl border bg-muted/10 p-3 text-xs">
-        <div className="font-medium">Отчёт по последним 15 раундам</div>
-        <p className="mt-1 text-muted-foreground">Обновляется автоматически после каждого третьего завершённого раунда. Каждый раунд получает отдельное заключение.</p>
-        {latestProposal?.status === "succeeded" && latestProposal.result ? <div className="mt-3 space-y-2">
-          <div className="text-muted-foreground">{latestProposal.result?.crew_summary || latestProposal.result?.situation}</div>
-          {latestProposal.result?.proposed_changes?.map((change, index) => <div key={index} className="flex flex-wrap items-center gap-2 rounded-lg border bg-background p-2"><span className="font-mono font-medium">{change.key}</span><span>{String(change.old_value ?? "—")} → {String(change.new_value)}</span><span className="text-muted-foreground">{change.reason}</span></div>)}
-          {(latestProposal.result.proposed_changes?.length ?? 0) > 0 ? <><details><summary className="cursor-pointer text-muted-foreground">Готовый JSON изменений</summary><pre className="mt-2 overflow-auto rounded-lg bg-background p-2">{JSON.stringify(latestProposal.result.proposed_changes, null, 2)}</pre></details><Button size="sm" disabled={applyProposal.isPending} onClick={() => applyProposal.mutate(latestProposal.run_id)}>Применить предложенные настройки</Button></> : <p className="text-muted-foreground">LLM не предложила менять настройки.</p>}
-        </div> : <p className="mt-2 text-muted-foreground">{latestProposal?.status === "running" || latestProposal?.status === "queued" ? "Отчёт формируется в общей очереди LLM…" : latestProposal?.status === "failed" ? `Ошибка отчёта: ${latestProposal.error_message}` : "Предложений пока нет."}</p>}
-      </div>
-      <RoundReports reports={reports} server={server} />
-      {last && <div className="space-y-2 rounded-xl border bg-muted/10 p-3 text-xs">
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge variant={last.status === "succeeded" ? "default" : last.status === "failed" ? "destructive" : "secondary"}>{last.status === "succeeded" ? "готово" : last.status === "failed" ? "ошибка" : last.status === "running" ? "выполняется" : "в очереди"}</Badge>
-          <Badge variant="outline">{last.mode}</Badge>
-          <Badge variant="secondary">{last.source === "auto" ? "автоцикл" : "вручную"}</Badge>
-          <span className="text-muted-foreground">{formatBrowserDate(last.requested_at)}{last.duration_ms != null ? ` · ${last.duration_ms}мс` : ""}{last.confidence != null ? ` · уверенность ${Math.round(last.confidence * 100)}%` : ""}{last.applied_count ? ` · применено ${last.applied_count}` : ""}{last.spawned_count ? ` · спавн ${last.spawned_count}` : ""}{last.rejected_count ? ` · отклонено ${last.rejected_count}` : ""}</span>
-        </div>
-        {last.instruction && <div className="text-muted-foreground">Команда оператора: «{last.instruction}»</div>}
-        {last.status === "failed" && <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-2 text-destructive">Ошибка: {last.error_message || "неизвестная ошибка"}</div>}
-        {last.result && <div className="space-y-2">
-          {last.result.situation && <div className="text-foreground">{last.result.situation}</div>}
-          {last.result.crew_summary && <div className="rounded-lg bg-background/60 p-3"><div className="mb-1 font-medium text-foreground">Эффективность экипажа</div><div className="text-muted-foreground">{last.result.crew_summary}</div></div>}
-          {(last.result.recommendations?.length ?? 0) > 0 && <div><div className="font-medium">Рекомендации оператору:</div><ul className="mt-1 space-y-1">{last.result.recommendations!.map((rec, index) => <li key={index} className="rounded-lg bg-background/60 p-2"><span className="font-medium text-foreground">{rec.title}</span>{rec.detail && <span className="text-muted-foreground"> — {rec.detail}</span>}</li>)}</ul></div>}
-          {(last.result.applied_changes?.length ?? 0) > 0 && <div><div className="font-medium">Применённые изменения:</div><ul className="mt-1 space-y-1">{last.result.applied_changes!.map((change, index) => <li key={index} className="font-mono text-[11px] text-success">{change.key}: {String(change.old_value ?? "?")} → {String(change.new_value)} {change.reason ? `— ${change.reason}` : ""}</li>)}</ul></div>}
-          {(last.result.spawn_requests?.length ?? 0) > 0 && <div><div className="font-medium">Спавн:</div><ul className="mt-1 space-y-1">{last.result.spawn_requests!.map((request, index) => <li key={index} className="font-mono text-[11px] text-info">{request.species} x{request.count} ({request.position_hint}) {request.reason ? `— ${request.reason}` : ""}</li>)}</ul></div>}
-          {(last.result.rejected?.length ?? 0) > 0 && <div><div className="font-medium text-warning">Отклонено валидатором:</div><ul className="mt-1 space-y-1">{last.result.rejected!.map((reason, index) => <li key={index} className="font-mono text-[11px] text-warning">{reason}</li>)}</ul></div>}
-        </div>}
-      </div>}
-      {records.length > 1 && <div className="space-y-1 text-[11px] text-muted-foreground">
-        <div className="font-medium text-foreground">История запусков (Журнал задач AI — поэтапный лог в AI-центре)</div>
-        {records.slice(1, 11).map((record) => <div key={record.id} className="flex flex-wrap gap-2">
-          <span className="font-mono">{record.requested_at?.slice(0, 16).replace("T", " ")}</span>
-          <Badge variant={record.status === "succeeded" ? "secondary" : record.status === "failed" ? "destructive" : "outline"} className="text-[9px]">{record.status}</Badge>
-          <Badge variant="outline" className="text-[9px]">{record.mode}</Badge>
-          <span>применено {record.applied_count}, отклонено {record.rejected_count}</span>
-          {record.source === "auto" && <span className="text-[9px]">авто</span>}
-          <span className="truncate">{record.status === "failed" ? record.error_message : record.result?.situation}</span>
-        </div>)}
-      </div>}
-    </CardContent></Card>
+
+        <Card className="overflow-hidden py-0"><CardHeader className="flex flex-row items-center justify-between gap-3 border-b bg-muted/20 px-4 py-3"><div><CardTitle className="text-sm">Последний анализ и предложения</CardTitle><CardDescription className="text-xs">Подробный результат открывается в модальном окне.</CardDescription></div>{latestProposal?.result?.proposed_changes?.length ? <Button size="sm" variant="outline" disabled={applyProposal.isPending} onClick={() => applyProposal.mutate(latestProposal.run_id)}>Применить предложения</Button> : null}</CardHeader><CardContent className="p-4">
+          {last ? <button type="button" className="w-full rounded-xl border bg-muted/10 p-4 text-left transition hover:border-primary/40 hover:bg-muted/20" onClick={() => setSelectedRun(last)}><span className="flex flex-wrap items-center gap-2"><Badge variant={statusVariant(last.status)}>{statusText(last.status)}</Badge><Badge variant="outline">{last.mode}</Badge><span className="text-xs text-muted-foreground">{formatBrowserDate(last.requested_at)}{last.duration_ms != null ? ` · ${Math.round(last.duration_ms / 1000)} сек.` : ""}</span><ChevronRight className="ml-auto size-4 text-muted-foreground" /></span><span className="mt-3 block text-sm font-medium">{last.status === "failed" ? last.error_message || "Запуск завершился ошибкой" : last.result?.situation || last.result?.crew_summary || "Откройте подробный результат запуска"}</span>{last.result?.recommendations?.[0] && <span className="mt-2 block text-xs text-muted-foreground">Совет: {last.result.recommendations[0].title}</span>}</button> : <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">Запусков пока нет. Запустите анализ, чтобы получить разбор и рекомендации.</div>}
+          <p className="mt-3 text-xs text-muted-foreground">Каждый цикл использует до 15 последних раундов. Рекомендации — справочные; оператор проверяет их перед применением.</p>
+        </CardContent></Card>
+      </TabsContent>
+
+      <TabsContent value="rounds"><RoundReports reports={reports} server={server} /></TabsContent>
+      <TabsContent value="history"><Card className="overflow-hidden py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="text-sm">История LLM-циклов</CardTitle><CardDescription className="text-xs">Поэтапные технические логи доступны в AI-центре.</CardDescription></CardHeader><CardContent className="space-y-2 p-4">{records.length ? records.map((record) => <button key={record.id} type="button" className="flex w-full flex-wrap items-center gap-2 rounded-xl border bg-card p-3 text-left transition hover:border-primary/40" onClick={() => setSelectedRun(record)}><Badge variant={statusVariant(record.status)}>{statusText(record.status)}</Badge><Badge variant="outline">{record.mode}</Badge><Badge variant="secondary">{record.source === "live" ? "Наблюдение" : record.source === "auto" ? "Авто" : "Вручную"}</Badge><span className="text-xs text-muted-foreground">{formatBrowserDate(record.requested_at)}</span><span className="min-w-0 flex-1 truncate text-sm">{record.status === "failed" ? record.error_message : record.result?.situation || record.instruction || "Результат готов"}</span><ChevronRight className="size-4 shrink-0 text-muted-foreground" /></button>) : <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">История запусков появится здесь.</div>}</CardContent></Card></TabsContent>
+    </Tabs>
+    <LLMRunDialog record={selectedRun} onOpenChange={(open) => { if (!open) setSelectedRun(null) }} onApply={(runId) => applyProposal.mutate(runId)} applying={applyProposal.isPending} />
+  </div>
+}
+
+function LLMAdviceCard({ server, config, record, onOpen }: { server: string; config: MonsterSpawnState["config"]; record: LLMRunRecord | null | undefined; onOpen: () => void }) {
+  const queryClient = useQueryClient()
+  const [decided, setDecided] = useState<Record<number, "accepted" | "rejected">>({})
+  const [proposalBaseline, setProposalBaseline] = useState<{ runId: string; values: Record<number, unknown> } | null>(null)
+  const recommendations = record?.result?.recommendations ?? []
+  const changes = record?.result?.proposed_changes ?? []
+  const apply = useMutation({
+    mutationFn: ({ indices, decision }: { indices: number[]; decision: "accepted" | "rejected" }) => monsterSpawnApi.applyProposal(server, record!.run_id, indices, decision),
+    onSuccess: (_result, { indices, decision }) => {
+      setDecided((current) => ({ ...current, ...Object.fromEntries(indices.map((index) => [index, decision])) }))
+      queryClient.invalidateQueries({ queryKey: ["monster-spawn", server] })
+      queryClient.invalidateQueries({ queryKey: ["monster-spawn-llm-runs", server] })
+      toast.success(decision === "accepted" ? indices.length === 1 ? "Корректировка применена" : "Корректировки применены" : "Предложения отклонены")
+    },
+    onError: (error: Error) => toast.error(error.message),
+  })
+  const pending = changes.map((_, index) => index).filter((index) => !decided[index])
+  const displayValue = (value: unknown) => value === undefined ? "—" : typeof value === "object" ? JSON.stringify(value) : String(value)
+  const currentValue = (key: string) => key.split(".").reduce<unknown>((value, part) => isRecord(value) ? value[part] : undefined, config.global)
+  const baselineValues = proposalBaseline && record && proposalBaseline.runId === record.run_id ? proposalBaseline.values : null
+  useEffect(() => {
+    if (!record?.run_id || (proposalBaseline !== null && proposalBaseline.runId === record.run_id)) return
+    setProposalBaseline({ runId: record.run_id, values: Object.fromEntries(changes.map((change, index) => [index, currentValue(change.key)])) })
+    setDecided(Object.fromEntries(Object.entries(record.result?.change_decisions ?? {}).map(([index, decision]) => [Number(index), decision])))
+  }, [record?.run_id])
+  useEffect(() => {
+    if (!record?.run_id) return
+    setDecided(Object.fromEntries(Object.entries(record.result?.change_decisions ?? {}).map(([index, decision]) => [Number(index), decision])))
+  }, [record?.run_id, record?.result?.change_decisions])
+  const warningPattern = /опас|потер|крит|незаверш|риск|проблем|ухудш|долг|слаб/i
+  return <Card className="overflow-hidden py-0">
+    <CardHeader className="border-b bg-gradient-to-r from-primary/10 via-muted/20 to-transparent px-4 py-3">
+      <CardTitle className="flex items-center gap-2 text-sm"><Sparkles className="size-4 text-primary" /> Рекомендации LLM оператору</CardTitle>
+      <CardDescription className="text-xs">На что обратить внимание по последнему анализу раундов</CardDescription>
+    </CardHeader>
+    <CardContent className="grid gap-4 p-4 lg:grid-cols-2">
+      <section className="min-w-0 space-y-3">
+      {record?.status === "failed" ? <div className="flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"><AlertTriangle className="mt-0.5 size-4 shrink-0" /><span>{record.error_message || "Последний анализ завершился ошибкой"}</span></div>
+        : recommendations.length > 0 ? <>
+          {(record?.result?.crew_summary || record?.result?.situation) && <p className="text-sm leading-relaxed text-muted-foreground">{record.result.crew_summary || record.result.situation}</p>}
+          <div className="max-h-[520px] space-y-2 overflow-y-auto pr-1">{recommendations.map((item, index) => {
+            const warning = warningPattern.test(`${item.title} ${item.detail}`)
+            return <div key={index} className={`flex items-start gap-2 rounded-xl border p-3 ${warning ? "border-warning/30 bg-warning/5" : "bg-muted/10"}`}>
+              {warning ? <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" /> : <Info className="mt-0.5 size-4 shrink-0 text-info" />}
+              <div className="min-w-0"><div className="text-sm font-medium">{item.title}</div>{item.detail && <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{item.detail}</p>}</div>
+            </div>
+          })}</div>
+        </>
+        : <div className="rounded-xl border border-dashed p-5 text-center text-sm text-muted-foreground">{record?.status === "running" || record?.status === "queued" ? "LLM готовит рекомендации…" : "Советы появятся после анализа раундов."}</div>}
+      <div className="flex items-center justify-between gap-3 border-t pt-3"><span className="text-[11px] text-muted-foreground">Советы требуют проверки оператором</span><Button size="sm" variant="outline" onClick={onOpen}>Открыть ассистента <ChevronRight className="size-3.5" /></Button></div>
+      </section>
+      <section className="min-w-0 space-y-3 border-t pt-3 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
+        <div className="flex flex-wrap items-center justify-between gap-2"><div className="text-sm font-semibold">Рекомендуемые настройки <span className="text-xs font-normal text-muted-foreground">{pending.length ? `· ${pending.length} ожидают решения` : "· все обработаны"}</span></div><div className="flex gap-2"><Button size="sm" disabled={!pending.length || apply.isPending || record?.status !== "succeeded"} onClick={() => apply.mutate({ indices: pending, decision: "accepted" })}><Check className="size-3.5" />Принять все</Button><Button size="sm" variant="outline" disabled={!pending.length || apply.isPending} onClick={() => apply.mutate({ indices: pending, decision: "rejected" })}><X className="size-3.5" />Отклонить все</Button></div></div>
+        <div className="max-h-[520px] space-y-2 overflow-y-auto pr-1">{changes.length && pending.length ? changes.map((change, index) => decided[index] ? null : <div key={`${change.key}-${index}`} className="rounded-xl border bg-muted/10 p-3">
+          <div className="font-mono text-xs font-medium">{change.key}</div><div className="mt-2 grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-xs"><div className="min-w-0"><div className="text-muted-foreground">Сейчас</div><div className="break-all">{displayValue(change.old_value ?? (baselineValues && index in baselineValues ? baselineValues[index] : currentValue(change.key)))}</div></div><ChevronRight className="size-4 text-muted-foreground" /><div className="min-w-0"><div className="text-muted-foreground">Предлагается</div><div className="break-all font-medium">{displayValue(change.new_value)}</div></div></div>
+          {change.reason && <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{change.reason}</p>}
+          <div className="mt-3 flex items-center justify-between gap-2">{decided[index] ? <Badge variant={decided[index] === "accepted" ? "default" : "secondary"}>{decided[index] === "accepted" ? "Принято" : "Отклонено"}</Badge> : <span />}{!decided[index] && <div className="flex gap-2"><Button size="sm" disabled={apply.isPending || record?.status !== "succeeded"} onClick={() => apply.mutate({ indices: [index], decision: "accepted" })}><Check className="size-3.5" />Принять</Button><Button size="sm" variant="outline" disabled={apply.isPending} onClick={() => apply.mutate({ indices: [index], decision: "rejected" })}><X className="size-3.5" />Отклонить</Button></div>}</div>
+        </div>) : <div className="rounded-xl border border-dashed p-5 text-center text-sm text-muted-foreground">{changes.length ? "Все предложения обработаны." : "LLM не предложила изменений настроек."}</div>}</div>
+      </section>
+    </CardContent>
+  </Card>
 }
 
 export function MonsterSpawnPage() {
@@ -789,6 +1062,8 @@ export function MonsterSpawnPage() {
   const { data: admin } = useCurrentAdmin()
   const [server, setServer] = useState("ASPER1")
   const [draft, setDraft] = useState<MonsterSpawnState | null>(null)
+  const [resetDialogOpen, setResetDialogOpen] = useState(false)
+  const [resetCountdown, setResetCountdown] = useState(10)
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null)
   const [selectedMapCharacterId, setSelectedMapCharacterId] = useState<number | null>(null)
   const [selectedWave, setSelectedWave] = useState(0)
@@ -851,11 +1126,33 @@ export function MonsterSpawnPage() {
     })
   }, [state.data?.dashboard, state.data?.last_seen_at, server])
   useEffect(() => { setDirty(false); setSelectedPlanId(null); setDraft(null) }, [server])
+  useEffect(() => {
+    if (!resetDialogOpen || resetCountdown <= 0) return
+    const timer = window.setTimeout(() => setResetCountdown((value) => Math.max(0, value - 1)), 1000)
+    return () => window.clearTimeout(timer)
+  }, [resetDialogOpen, resetCountdown])
   useEffect(() => { const close = () => setContextMenu(null); const escape = (event: KeyboardEvent) => event.key === "Escape" && setContextMenu(null); window.addEventListener("click", close); window.addEventListener("keydown", escape); return () => { window.removeEventListener("click", close); window.removeEventListener("keydown", escape) } }, [])
 
   const save = useMutation({
     mutationFn: () => monsterSpawnApi.update(server, { config: draft!.config, plans: draft!.plans, memory: draft!.memory }),
     onSuccess: (next) => { setDraft(clone(next)); setDirty(false); queryClient.setQueryData(["monster-spawn", server], next); toast.success("Изменения отправлены плагину") },
+    onError: (error: Error) => toast.error(error.message),
+  })
+  const resetAdaptations = useMutation({
+    mutationFn: () => monsterSpawnApi.resetAdaptations(server),
+    onSuccess: (next) => {
+      queryClient.setQueryData(["monster-spawn", server], next)
+      setDraft((current) => {
+        if (!current) return clone(next)
+        const memory = { ...current.memory }
+        for (const key of ["waves", "submarines", "global_performance_ema"]) delete memory[key]
+        return { ...current, memory, round_reports: [] }
+      })
+      queryClient.invalidateQueries({ queryKey: ["monster-spawn-analysis", server] })
+      queryClient.invalidateQueries({ queryKey: ["monster-spawn-reports", server] })
+      setResetDialogOpen(false)
+      toast.success("Адаптации и отчёты о раундах сброшены")
+    },
     onError: (error: Error) => toast.error(error.message),
   })
   const updateDraft = (fn: (next: MonsterSpawnState) => void) => { if (!draft) return; const next = clone(draft); fn(next); setDraft(next); setDirty(true) }
@@ -927,7 +1224,6 @@ export function MonsterSpawnPage() {
     ...pendingWaveDetails.filter((wave) => wave.x != null && wave.y != null && Number.isFinite(Number(wave.x)) && Number.isFinite(Number(wave.y))).map((wave, index) => ({ id: `pending:${index}`, x: Number(wave.x), y: Number(wave.y), label: wave.wave_name ?? "Ожидаемая волна", color: "#F6C453", pulse: true, detail: `Ожидает спавна\n${wave.wave_name ?? "Волна"}` })),
   ]
   const roundMapMarkers = [...waveMarkers, ...plannedMarkers]
-  const waveChart = { labels: waveLogs.slice(0, 8).map((item) => item.name.replace("vanilla:", "")), datasets: [{ label: "Среднее время зачистки, с", data: waveLogs.slice(0, 8).map((item) => Math.round(item.avg_repel_seconds)), backgroundColor: CHART_COLORS[0], ...barDatasetDefaults }] }
   const shipChart = { labels: shipLogs.slice(0, 8).map((item) => item.name), datasets: [{ label: "Performance EMA", data: shipLogs.slice(0, 8).map((item) => item.performance_ema), backgroundColor: CHART_COLORS[1], ...barDatasetDefaults }] }
   const trendValues = shipLogs.flatMap((item) => item.recent_performance).slice(-24)
   const trendChart = { labels: trendValues.map((_, index) => `${index + 1}`), datasets: [{ label: "Последние наблюдения", data: trendValues, borderColor: CHART_COLORS[2], backgroundColor: `${CHART_COLORS[2]}28`, fill: true, ...lineDatasetDefaults }] }
@@ -1082,6 +1378,7 @@ export function MonsterSpawnPage() {
         </div>
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
           <Select value={server} onValueChange={setServer}><SelectTrigger className="min-w-32 flex-1 bg-background/80 sm:flex-none"><SelectValue /></SelectTrigger><SelectContent>{["ASPER1", "ASPER2"].map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
+          <Button variant="outline" className="flex-1 sm:flex-none" disabled={resetAdaptations.isPending} onClick={() => { setResetCountdown(10); setResetDialogOpen(true) }}><Trash2 className="size-4" />Сбросить адаптации</Button>
           <Button className="flex-1 sm:flex-none" disabled={!dirty || save.isPending} onClick={() => save.mutate()}><Save className="size-4" /> {save.isPending ? "Сохранение…" : "Сохранить"}</Button>
         </div>
       </div>
@@ -1097,7 +1394,7 @@ export function MonsterSpawnPage() {
       <span className="ml-auto text-muted-foreground">Контакт: {draft.last_seen_at ? formatBrowserDate(draft.last_seen_at) : "нет данных"}</span>
     </div>
 
-    <Tabs value={activeTab} onValueChange={setActiveTab} className="min-h-0">{activeTab === "logs" && <RoundReports reports={reports.data?.reports ?? []} server={server} />}
+    <Tabs value={activeTab} onValueChange={setActiveTab} className="min-h-0">
       <TabsList className="flex h-auto w-full gap-1 overflow-x-auto rounded-xl border bg-muted/40 p-1.5"><TabsTrigger value="overview" className="shrink-0 gap-1.5 rounded-lg px-3 py-2 text-xs sm:gap-2"><Activity className="size-4 shrink-0" /> Обзор</TabsTrigger><TabsTrigger value="monitoring" className="shrink-0 gap-1.5 rounded-lg px-3 py-2 text-xs sm:gap-2"><Radar className="size-4 shrink-0" /> Мониторинг</TabsTrigger><TabsTrigger value="llm" className="shrink-0 gap-1.5 rounded-lg px-3 py-2 text-xs sm:gap-2"><Bot className="size-4 shrink-0" /> LLM-ассистент</TabsTrigger><TabsTrigger value="control" className="shrink-0 gap-1.5 rounded-lg px-3 py-2 text-xs sm:gap-2"><SlidersHorizontal className="size-4 shrink-0" /> Настройки</TabsTrigger><TabsTrigger value="schemes" className="shrink-0 gap-1.5 rounded-lg px-3 py-2 text-xs sm:gap-2"><Layers className="size-4 shrink-0" /> Схемы спавна</TabsTrigger><TabsTrigger value="logs" className="shrink-0 gap-1.5 rounded-lg px-3 py-2 text-xs sm:gap-2"><TrendingUp className="size-4 shrink-0" /> Логи и анализ</TabsTrigger><TabsTrigger value="manual" className="shrink-0 gap-1.5 rounded-lg px-3 py-2 text-xs sm:gap-2"><Target className="size-4 shrink-0" /> Ручная настройка</TabsTrigger></TabsList>
 
       <TabsContent value="overview" className="space-y-4 pt-2">
@@ -1108,7 +1405,7 @@ export function MonsterSpawnPage() {
             {recentWaves.slice(0, 4).map((wave) => <RecentWaveCard key={wave.wave_id + String(wave.resolved_at_seconds)} wave={wave} />)}
             {!activeWaves.length && !recentWaves.length && <Button variant="ghost" className="w-full justify-between" onClick={() => setActiveTab("logs")}>Открыть полный анализ <ChevronRight className="size-4" /></Button>}
           </CardContent></Card></div>
-        <div className="grid gap-4 lg:grid-cols-2"><ChartCard title="Самые долгие волны" description="Среднее время от спавна до разрешения"><Bar options={{ ...baseChartOptions, plugins: { ...baseChartOptions.plugins, legend: { display: false } } }} data={waveChart} /></ChartCard><ChartCard title="Корабли по эффективности" description="Ниже 1.0 означает более тяжёлое прохождение"><Bar options={{ ...baseChartOptions, plugins: { ...baseChartOptions.plugins, legend: { display: false } } }} data={shipChart} /></ChartCard></div>
+        <LLMAdviceCard server={server} config={draft.config} record={latestRoundAnalysis ?? null} onOpen={() => setActiveTab("llm")} />
         <Card className="overflow-hidden py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="flex items-center gap-2 text-sm"><MapPin className="size-4 text-primary" /> Карта раунда</CardTitle><CardDescription className="text-xs">Цвет точки волны совпадает с цветом её существ. Мигающие метки — планируемый спавн. Нажмите на метку или существо для подробностей.</CardDescription></CardHeader><CardContent className="p-4"><div className="relative h-[380px] overflow-hidden rounded-xl border">
           {rounds.isError ? <MapPlaceholder>Не удалось загрузить активные раунды{rounds.error instanceof Error ? `: ${rounds.error.message}` : ""}</MapPlaceholder>
             : !round ? <MapPlaceholder>Для {server} сейчас нет активного раунда — мир не транслируется</MapPlaceholder>
@@ -1173,15 +1470,15 @@ export function MonsterSpawnPage() {
           {!schemeList.length && <div className="rounded-xl border border-dashed p-6 text-center text-xs text-muted-foreground">Список пуст — плагин будет ставить волны на точках уровня (mainpath и т.п.), пока не появится хотя бы одна схема</div>}
           <Button variant="outline" onClick={() => { updateSchemes((schemes) => { schemes.push(newScheme()) }); setSchemeDialog({ index: schemeList.length, isNew: true }) }}><Plus className="size-4" /> Добавить схему</Button>
         </div>
-        <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="flex items-center gap-2 text-sm"><Ban className="size-4 text-warning" /> Списки исключений</CardTitle><CardDescription className="text-xs">Подстроки в названиях волн — списки можно пополнять и чистить динамически</CardDescription></CardHeader>
+        <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="flex items-center gap-2 text-sm"><Ban className="size-4 text-warning" /> Списки исключений</CardTitle><CardDescription className="text-xs">Совпадение по подстроке имени или типу волны (mainpath, sidepath, cave, ruin, wreck, abyss и др.)</CardDescription></CardHeader>
           <CardContent className="grid gap-3 p-4 lg:grid-cols-2">
-            <TagListEditor label="Не удерживать перед спавном" description="Волны с этими подстроками запускаются сразу, без hold_seconds (по умолчанию: abyss, moloch, cave)." tags={ignoreList("hold_ignore_names")} onChange={(tags) => setGlobal("hold_ignore_names", tags)} addPlaceholder="например: moloch" />
-             <TagListEditor label="Без схем спавна" description="Волны с этими подстроками спавнятся на структурных точках уровня вместо схем (по умолчанию: cave, abyss)." tags={ignoreList("spawn_scheme_ignore_names")} onChange={(tags) => setGlobal("spawn_scheme_ignore_names", tags)} addPlaceholder="например: cave" />
-             <TagListEditor label="Без множителей количества и HP" description="Волны с этими подстроками не получают adaptive/player amount и HP множители (по умолчанию: abyss)." tags={ignoreList("multiplier_exempt_wave_names")} onChange={(tags) => setGlobal("multiplier_exempt_wave_names", tags)} addPlaceholder="например: abyss" />
+            <TagListEditor label="Не удерживать перед спавном" description="Совпадение по подстроке имени или типу волны (например, cave, ruin, wreck); такие волны запускаются сразу, без hold_seconds." tags={ignoreList("hold_ignore_names")} onChange={(tags) => setGlobal("hold_ignore_names", tags)} addPlaceholder="например: moloch или wreck" />
+             <TagListEditor label="Без схем спавна" description="Совпадение по подстроке имени или типу волны (например, cave, abyss); такие волны используют структурные точки уровня вместо схем." tags={ignoreList("spawn_scheme_ignore_names")} onChange={(tags) => setGlobal("spawn_scheme_ignore_names", tags)} addPlaceholder="например: cave или wreck" />
+             <TagListEditor label="Без множителей количества и HP" description="Совпадение по подстроке имени или типу волны (например, abyss, wreck); такие волны не получают adaptive/player amount и HP множители." tags={ignoreList("multiplier_exempt_wave_names")} onChange={(tags) => setGlobal("multiplier_exempt_wave_names", tags)} addPlaceholder="например: abyss или wreck" />
           </CardContent></Card>
       </TabsContent>
 
-      <TabsContent value="logs" className="space-y-4 pt-2"><div className="grid gap-4 sm:grid-cols-3"><Metric icon={TrendingUp} label="Завершено волн" value={String(waveLogs.reduce((sum, item) => sum + item.times_spawned, 0))} detail={`${waveLogs.length} типа событий`} tone="primary" /><Metric icon={TrendingDown} label="Средняя скорость" value={waveLogs.length ? `${Math.round(waveLogs.filter((item) => item.avg_repel_seconds).reduce((sum, item) => sum + item.avg_repel_seconds, 0) / Math.max(1, waveLogs.filter((item) => item.avg_repel_seconds).length))} с` : "—"} detail="Среднее по типам волн" tone="warning" /><Metric icon={BrainCircuit} label="Наблюдений по кораблям" value={String(shipLogs.reduce((sum, item) => sum + item.times_spawned, 0))} detail="Используются в корреляции" tone="success" /></div><div className="grid gap-4 lg:grid-cols-2"><ChartCard title="Performance trajectory" description="Последние доступные значения из adaptive-memory"><Line options={baseChartOptions} data={trendChart} /></ChartCard><ChartCard title="Efficiency by ship" description="Сравнение кораблей по performance EMA"><Bar options={{ ...baseChartOptions, plugins: { ...baseChartOptions.plugins, legend: { display: false } } }} data={shipChart} /></ChartCard></div><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Лог разрешения волн</CardTitle><CardDescription className="text-xs">Как быстро экипажи закрывали волны и какой ущерб получили</CardDescription></CardHeader><CardContent><WaveLogs logs={waveLogs} /></CardContent></Card><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Эффективность по кораблям</CardTitle><CardDescription className="text-xs">Детализация для сравнения дизайна субмарин</CardDescription></CardHeader><CardContent><ShipLogs logs={shipLogs} /></CardContent></Card><Card className="py-0"><CardHeader className="border-b px-4 py-3"><CardTitle className="text-sm">Автоматический анализ и предложения LLM</CardTitle><CardDescription className="text-xs">Новый отчёт создаётся после каждого третьего раунда на основе последних 15.</CardDescription></CardHeader><CardContent className="space-y-3 p-4 text-sm">{latestRoundAnalysis?.status === "running" || latestRoundAnalysis?.status === "queued" ? <p>LLM анализирует раунды…</p> : latestRoundAnalysis?.status === "failed" ? <p className="text-destructive">{latestRoundAnalysis.error_message}</p> : latestRoundAnalysis?.result ? <><p>{latestRoundAnalysis.result.crew_summary || latestRoundAnalysis.result.situation}</p>{latestRoundAnalysis.result.recommendations?.map((item, index) => <p key={index}><b>{item.title}</b> — {item.detail}</p>)}<Button variant="outline" size="sm" onClick={() => setActiveTab("llm")}>Открыть предложения настроек</Button></> : <p className="text-muted-foreground">Ожидаем анализа LLM после трёх раундов.</p>}</CardContent></Card></TabsContent>
+      <TabsContent value="logs" className="space-y-4 pt-2"><RoundReports reports={reports.data?.reports ?? []} server={server} /><div className="grid gap-4 sm:grid-cols-3"><Metric icon={TrendingUp} label="Завершено волн" value={String(waveLogs.reduce((sum, item) => sum + item.times_spawned, 0))} detail={`${waveLogs.length} типа событий`} tone="primary" /><Metric icon={TrendingDown} label="Средняя скорость" value={waveLogs.length ? `${Math.round(waveLogs.filter((item) => item.avg_repel_seconds).reduce((sum, item) => sum + item.avg_repel_seconds, 0) / Math.max(1, waveLogs.filter((item) => item.avg_repel_seconds).length))} с` : "—"} detail="Среднее по типам волн" tone="warning" /><Metric icon={BrainCircuit} label="Наблюдений по кораблям" value={String(shipLogs.reduce((sum, item) => sum + item.times_spawned, 0))} detail="Используются в корреляции" tone="success" /></div><div className="grid gap-4 lg:grid-cols-2"><ChartCard title="Performance trajectory" description="Последние доступные значения из adaptive-memory"><Line options={baseChartOptions} data={trendChart} /></ChartCard><ChartCard title="Efficiency by ship" description="Сравнение кораблей по performance EMA"><Bar options={{ ...baseChartOptions, plugins: { ...baseChartOptions.plugins, legend: { display: false } } }} data={shipChart} /></ChartCard></div><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Лог разрешения волн</CardTitle><CardDescription className="text-xs">Как быстро экипажи закрывали волны и какой ущерб получили</CardDescription></CardHeader><CardContent><WaveLogs logs={waveLogs} /></CardContent></Card><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Эффективность по кораблям</CardTitle><CardDescription className="text-xs">Детализация для сравнения дизайна субмарин</CardDescription></CardHeader><CardContent><ShipLogs logs={shipLogs} /></CardContent></Card><Card className="py-0"><CardHeader className="border-b px-4 py-3"><CardTitle className="text-sm">Автоматический анализ и предложения LLM</CardTitle><CardDescription className="text-xs">Новый отчёт создаётся после каждого третьего раунда на основе последних 15.</CardDescription></CardHeader><CardContent className="space-y-3 p-4 text-sm">{latestRoundAnalysis?.status === "running" || latestRoundAnalysis?.status === "queued" ? <p>LLM анализирует раунды…</p> : latestRoundAnalysis?.status === "failed" ? <p className="text-destructive">{latestRoundAnalysis.error_message}</p> : latestRoundAnalysis?.result ? <><p>{latestRoundAnalysis.result.crew_summary || latestRoundAnalysis.result.situation}</p>{latestRoundAnalysis.result.recommendations?.map((item, index) => <p key={index}><b>{item.title}</b> — {item.detail}</p>)}<Button variant="outline" size="sm" onClick={() => setActiveTab("llm")}>Открыть предложения настроек</Button></> : <p className="text-muted-foreground">Ожидаем анализа LLM после трёх раундов.</p>}</CardContent></Card></TabsContent>
 
       <TabsContent value="manual" className="space-y-4 pt-2"><div className="rounded-xl border border-primary/30 bg-primary/5 p-3 text-xs text-muted-foreground"><div className="flex items-center gap-2 font-medium text-foreground"><Target className="size-4 text-primary" /> Полная ручная настройка</div><p className="mt-1">Здесь доступны планы, волны и сырой JSON без ограничений визуального режима. Изменения не попадут на сервер до нажатия «Сохранить».</p></div><Tabs defaultValue="plans"><TabsList className="grid w-full grid-cols-3"><TabsTrigger value="plans">Планы · {draft.plans.length}</TabsTrigger><TabsTrigger value="waves">Волны · {draft.config.waves.length}</TabsTrigger><TabsTrigger value="json">Raw JSON</TabsTrigger></TabsList><TabsContent value="plans" className="space-y-4 pt-3"><div className="grid min-h-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(380px,.75fr)]"><div className="relative h-[480px] overflow-hidden rounded-xl border">
   {rounds.isError ? <MapPlaceholder height="480px">Не удалось загрузить активные раунды{rounds.error instanceof Error ? `: ${rounds.error.message}` : ""}</MapPlaceholder>
@@ -1272,5 +1569,12 @@ export function MonsterSpawnPage() {
         onChange={(next) => updateSchemes((schemes) => { schemes[schemeDialog.index] = next })}
       />
     </EditorDialog>}
+    <Dialog open={resetDialogOpen} onOpenChange={(open) => { setResetDialogOpen(open); if (open) setResetCountdown(10) }}>
+      <DialogContent className="overflow-hidden" style={{ backgroundColor: `rgba(127, 29, 29, ${Math.min(0.32, (10 - resetCountdown) * 0.032)})`, transition: "background-color 1s linear" }}>
+        <DialogHeader><DialogTitle className="text-destructive">Сбросить адаптации монстров?</DialogTitle><DialogDescription className="text-foreground">Будут удалены адаптивная память и все отчёты о раундах для {server}. Изученные волны, настроенные схемы и остальные настройки сохранятся. Сброс нельзя отменить.</DialogDescription></DialogHeader>
+        <div className="py-3 text-center text-sm font-medium">{resetCountdown > 0 ? `Подтверждение станет доступно через ${resetCountdown} сек.` : "Можно подтвердить сброс"}</div>
+        <DialogFooter><Button variant="outline" onClick={() => setResetDialogOpen(false)}>Отмена</Button><Button variant="destructive" disabled={resetCountdown > 0 || resetAdaptations.isPending} onClick={() => resetAdaptations.mutate()}>{resetAdaptations.isPending ? "Сброс…" : "Подтвердить сброс"}</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div>
 }

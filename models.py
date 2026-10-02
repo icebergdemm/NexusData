@@ -141,6 +141,8 @@ class AdminUser(Base):
     individual_permissions = Column(JSON, nullable=True)
     is_superuser = Column(Boolean, default=False)
     is_deleted = Column(Integer, default=0)  # 1 = soft-deleted, blocks login
+    # Explicitly removed site users are not re-created by Discord role sync.
+    auto_provision_excluded = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, default=func.now())
     last_login = Column(DateTime, nullable=True)
     # True when this account was auto-provisioned by task_sync_department_roles
@@ -193,6 +195,9 @@ class AdminSession(Base):
     last_seen_ip = Column(String(45), nullable=True)
     user_agent = Column(String(500), nullable=True)
     auth_type = Column(String(32), nullable=True)
+    browser_fingerprint_hash = Column(String(64), nullable=True)
+    # NULL marks legacy sessions; False is the explicit three-day fallback.
+    browser_fingerprint_bound = Column(Boolean, nullable=True)
     revoked = Column(Integer, default=0)
 
 
@@ -1783,6 +1788,57 @@ class AppSetting(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
 
+class ExternalWorkerNode(Base):
+    """Registered outbound-only worker client and its current heartbeat."""
+    __tablename__ = "external_worker_nodes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(120), nullable=False, unique=True)
+    token_hash = Column(String(64), nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True)
+    status = Column(String(24), nullable=False, default="offline", index=True)
+    current_job_id = Column(Integer, nullable=True, index=True)
+    capabilities = Column(JSON, nullable=False, default=list)
+    version = Column(String(80), nullable=True)
+    last_seen_at = Column(DateTime, nullable=True, index=True)
+    pending_command = Column(String(24), nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+class ExternalWorkerJob(Base):
+    """Durable generic job queue consumed by external worker modules."""
+    __tablename__ = "external_worker_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_type = Column(String(100), nullable=False, index=True)
+    dedupe_key = Column(String(160), nullable=True, unique=True, index=True)
+    status = Column(String(24), nullable=False, default="queued", index=True)
+    payload = Column(JSON, nullable=False, default=dict)
+    result = Column(JSON, nullable=True)
+    result_artifact_path = Column(String(1000), nullable=True)
+    worker_id = Column(Integer, ForeignKey("external_worker_nodes.id", ondelete="SET NULL"), nullable=True, index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    max_attempts = Column(Integer, nullable=False, default=5)
+    lease_until = Column(DateTime, nullable=True, index=True)
+    heartbeat_at = Column(DateTime, nullable=True)
+    error = Column(String(2000), nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+    finished_at = Column(DateTime, nullable=True)
+
+
+class ExternalWorkerLog(Base):
+    """Bounded worker and task event log shown in administration."""
+    __tablename__ = "external_worker_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    worker_id = Column(Integer, ForeignKey("external_worker_nodes.id", ondelete="CASCADE"), nullable=False, index=True)
+    job_id = Column(Integer, nullable=True, index=True)
+    level = Column(String(12), nullable=False, default="info")
+    message = Column(String(2000), nullable=False)
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+
+
 class AIPlayerDossier(Base):
     """Latest AI dossier and its durable generation state for one player."""
     __tablename__ = "ai_player_dossiers"
@@ -2189,6 +2245,8 @@ class DepartmentMember(Base):
     # uses this as the "most recent assignment wins" tie-break when the same
     # admin simultaneously qualifies for auto-grants via multiple departments.
     role_state_updated_at = Column(DateTime, nullable=True)
+    # A removal from the site roster must survive Discord role reconciliation.
+    is_excluded = Column(Boolean, nullable=False, default=False)
 
     department = relationship("Department", back_populates="members")
     admin = relationship("AdminUser", foreign_keys=[admin_id])

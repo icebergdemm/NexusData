@@ -136,11 +136,14 @@ def _apply_migrations():
         ("players_data", "discord_id_confirmed", "TINYINT DEFAULT 0"),
         # admin_users: soft-delete
         ("admin_users", "is_deleted", "TINYINT NOT NULL DEFAULT 0"),
+        ("admin_users", "auto_provision_excluded", "TINYINT NOT NULL DEFAULT 0"),
         # admin browser-session lifecycle hardening
         ("admin_sessions", "last_seen_at", "DATETIME"),
         ("admin_sessions", "last_seen_ip", "VARCHAR(45)"),
         ("admin_sessions", "user_agent", "VARCHAR(500)"),
         ("admin_sessions", "auth_type", "VARCHAR(32)"),
+        ("admin_sessions", "browser_fingerprint_hash", "VARCHAR(64)"),
+        ("admin_sessions", "browser_fingerprint_bound", "TINYINT"),
         # admin security-event context
         ("admin_action_logs", "auth_type", "VARCHAR(32)"),
         ("admin_action_logs", "session_id", "INT"),
@@ -287,6 +290,7 @@ def _apply_migrations():
         # Recency signal for the auto-grant tie-break ("most recent
         # assignment wins" across departments).
         ("department_members", "role_state_updated_at", "DATETIME"),
+        ("department_members", "is_excluded", "TINYINT NOT NULL DEFAULT 0"),
         # Marks a server_group_id as worker-managed vs a human's manual
         # assignment — the worker never touches a row once is_auto is False.
         ("server_player_privileges", "is_auto", "TINYINT NOT NULL DEFAULT 0"),
@@ -481,6 +485,26 @@ def _apply_migrations():
                 conn.commit()
         except Exception:
             pass
+
+        # Structured Discord settings (including the mute registry) can exceed
+        # the old VARCHAR size. Keep the value column large enough for the JSON
+        # document that set_json_bot_config stores there.
+        try:
+            config_value_type = conn.execute(__import__('sqlalchemy').text(
+                "SELECT DATA_TYPE FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA=:db AND TABLE_NAME='discord_bot_config' AND COLUMN_NAME='value'"
+            ), {"db": db_name}).scalar()
+            if config_value_type and str(config_value_type).lower() != "longtext":
+                conn.execute(__import__('sqlalchemy').text(
+                    "ALTER TABLE `discord_bot_config` MODIFY COLUMN `value` LONGTEXT NULL"
+                ))
+                conn.commit()
+        except Exception as e:
+            conn.rollback()
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "Discord bot config value widening failed: %s", e
+            )
 
         # AI system prompts are intentionally editable by superusers and the
         # Git default is already longer than the old generic setting limit.

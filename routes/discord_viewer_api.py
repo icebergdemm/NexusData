@@ -16,7 +16,7 @@ sync_members_task), это быстрее и не гоняет бота лишн
 import asyncio
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form, WebSocket
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File, Form, WebSocket
 from fastapi import WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
 from fastapi.concurrency import run_in_threadpool
@@ -60,7 +60,7 @@ def _get_websocket_admin(websocket: WebSocket) -> Optional[AdminUser]:
 
         token = websocket.cookies.get("admin_token")
         if admin is None and token:
-            session = get_active_admin_session(db, token, touch=False)
+            session = get_active_admin_session(db, token, request=websocket, touch=False)
             if session:
                 admin = (
                     db.query(AdminUser)
@@ -81,10 +81,24 @@ async def _call_bot(coro, timeout: float = 12.0):
     """Мост к боту с честной ошибкой вместо зависшего запроса, если бот не
     подключён к Discord или не отвечает в разумное время."""
     from discord_bot import bot as discord_bot
+    import discord
     try:
         return await asyncio.wait_for(asyncio.wrap_future(discord_bot.schedule(coro)), timeout=timeout)
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="Бот не ответил вовремя — попробуйте ещё раз")
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except discord.Forbidden:
+        raise HTTPException(status_code=403, detail="Discord отказал: недостаточно прав бота")
+    except discord.NotFound:
+        raise HTTPException(status_code=404, detail="Объект Discord не найден")
+    except discord.RateLimited as e:
+        retry_after = max(0.0, float(e.retry_after))
+        raise HTTPException(
+            status_code=429,
+            detail="Discord ограничил частоту запросов",
+            headers={"Retry-After": str(retry_after)},
+        )
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
@@ -103,14 +117,348 @@ async def api_viewer_tree(request: Request, db: Session = Depends(get_db)):
     return result
 
 
+@router.get("/api/v1/admin/discord-bot/viewer/channels/{channel_id}/archived-threads")
+async def api_viewer_archived_threads(
+    channel_id: int,
+    request: Request,
+    source: str = Query(...),
+    before: Optional[str] = Query(default=None, max_length=64),
+    db: Session = Depends(get_db),
+):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "discord_bot", "view"):
+        raise HTTPException(status_code=403)
+    _validate_viewer_ids(channel_id)
+    if source not in {"public", "joined_private"}:
+        raise HTTPException(status_code=400, detail="Недопустимый источник архивных веток")
+    if before:
+        try:
+            if source == "joined_private":
+                _validate_viewer_ids(int(before))
+            else:
+                datetime.fromisoformat(before)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Некорректный курсор архивных веток")
+    from discord_bot import bot as discord_bot
+    return await _call_bot(
+        discord_bot.viewer_get_archived_threads(channel_id, source, before),
+        timeout=30.0,
+    )
+
+
 @router.get("/api/v1/admin/discord-bot/viewer/channels/{channel_id}/messages")
-async def api_viewer_messages(channel_id: int, request: Request, before: Optional[int] = None, limit: int = 50, db: Session = Depends(get_db)):
+async def api_viewer_messages(channel_id: int, request: Request, before: Optional[int] = None, around: Optional[int] = None, limit: int = 50, db: Session = Depends(get_db)):
     admin = _get_admin(request, db)
     if not check_permission(admin, "discord_bot", "view"):
         raise HTTPException(status_code=403)
     from discord_bot import bot as discord_bot
-    messages = await _call_bot(discord_bot.viewer_get_messages(channel_id, before, limit))
+    for value in (channel_id, before, around):
+        if value is not None:
+            _validate_viewer_ids(value)
+    messages = await _call_bot(discord_bot.viewer_get_messages(channel_id, before, limit, around=around))
     return {"messages": messages}
+
+
+def _validate_viewer_ids(*values: int) -> None:
+    if any(int(value) <= 0 for value in values):
+        raise HTTPException(status_code=400, detail="Discord ID должен быть положительным snowflake")
+
+
+@router.get("/api/v1/admin/discord-bot/viewer/search")
+async def api_viewer_search(
+    request: Request,
+    query: str = Query(default="", max_length=1024),
+    channel_id: list[str] = Query(default=[]),
+    author_type: list[str] = Query(default=[]),
+    author_id: list[str] = Query(default=[]),
+    mentions: list[str] = Query(default=[]),
+    mentions_role_id: list[str] = Query(default=[]),
+    mention_everyone: Optional[bool] = None,
+    replied_to_user_id: list[str] = Query(default=[]),
+    replied_to_message_id: list[str] = Query(default=[]),
+    pinned: Optional[bool] = None,
+    has: list[str] = Query(default=[]),
+    embed_type: list[str] = Query(default=[]),
+    embed_provider: list[str] = Query(default=[]),
+    link_hostname: list[str] = Query(default=[]),
+    attachment_filename: list[str] = Query(default=[]),
+    attachment_extension: list[str] = Query(default=[]),
+    sort_by: Optional[str] = None,
+    sort_order: Optional[str] = None,
+    max_id: Optional[str] = None,
+    min_id: Optional[str] = None,
+    slop: Optional[int] = None,
+    include_nsfw: Optional[bool] = None,
+    offset: int = 0,
+    limit: int = 25,
+    db: Session = Depends(get_db),
+):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "discord_bot", "view"):
+        raise HTTPException(status_code=403)
+    if not query.strip() and not any((
+        channel_id, author_type, author_id, mentions, mentions_role_id, mention_everyone is not None,
+        replied_to_user_id, replied_to_message_id, pinned is not None, has, embed_type,
+        embed_provider, link_hostname, attachment_filename, attachment_extension, max_id, min_id,
+    )):
+        raise HTTPException(status_code=400, detail="Укажите текст или хотя бы один фильтр поиска")
+    if offset < 0 or offset > 9975:
+        raise HTTPException(status_code=400, detail="Смещение Discord Search должно быть от 0 до 9975")
+    if slop is not None and not 0 <= slop <= 100:
+        raise HTTPException(status_code=400, detail="slop должен быть от 0 до 100")
+    if sort_by is not None and sort_by not in {"timestamp", "relevance"}:
+        raise HTTPException(status_code=400, detail="Недопустимая сортировка Discord Search")
+    if sort_order is not None and sort_order not in {"asc", "desc"}:
+        raise HTTPException(status_code=400, detail="sort_order должен быть asc или desc")
+
+    id_values = channel_id + author_id + mentions + mentions_role_id + replied_to_user_id + replied_to_message_id
+    try:
+        parsed_ids = [int(value) for value in id_values]
+        parsed_bounds = [int(value) for value in (max_id, min_id) if value is not None]
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Фильтр ID должен содержать snowflake числами")
+    _validate_viewer_ids(*(parsed_ids + parsed_bounds))
+
+    filters = {"content": query.strip()} if query.strip() else {}
+    for key, values in (
+        ("channel_id", channel_id), ("author_type", author_type), ("author_id", author_id),
+        ("mentions", mentions), ("mentions_role_id", mentions_role_id),
+        ("replied_to_user_id", replied_to_user_id), ("replied_to_message_id", replied_to_message_id),
+        ("has", has), ("embed_type", embed_type), ("embed_provider", embed_provider),
+        ("link_hostname", link_hostname), ("attachment_filename", attachment_filename),
+        ("attachment_extension", attachment_extension),
+    ):
+        if values:
+            filters[key] = values
+    for key, value in (
+        ("mention_everyone", mention_everyone), ("pinned", pinned), ("sort_by", sort_by),
+        ("sort_order", sort_order), ("max_id", max_id), ("min_id", min_id),
+        ("slop", slop), ("include_nsfw", include_nsfw),
+    ):
+        if value is not None:
+            filters[key] = value
+
+    from discord_bot import bot as discord_bot
+    return await _call_bot(discord_bot.viewer_search_messages(filters, offset=offset, limit=limit))
+
+
+@router.post("/api/v1/admin/discord-bot/viewer/channels/{channel_id}/messages/{message_id}/reactions/toggle")
+async def api_viewer_toggle_reaction(channel_id: int, message_id: int, request: Request, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "discord_bot", "manage_config"):
+        raise HTTPException(status_code=403)
+    _validate_viewer_ids(channel_id, message_id)
+    body = await request.json()
+    emoji = str(body.get("emoji") or "")
+    if not emoji or len(emoji) > 100:
+        raise HTTPException(status_code=400, detail="Некорректная emoji")
+
+    from discord_bot import bot as discord_bot
+    result = await _call_bot(discord_bot.viewer_toggle_reaction(channel_id, message_id, emoji))
+    from routes.admin import log_admin_action
+    log_admin_action(db, admin.id, "discord_viewer_toggle_reaction", {
+        "channel_id": str(channel_id), "message_id": str(message_id), "emoji": emoji,
+    })
+    return result
+
+
+@router.get("/api/v1/admin/discord-bot/viewer/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/users")
+async def api_viewer_reaction_users(
+    channel_id: int, message_id: int, emoji: str, request: Request,
+    after: Optional[int] = None, limit: int = 50, db: Session = Depends(get_db),
+):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "discord_bot", "view"):
+        raise HTTPException(status_code=403)
+    _validate_viewer_ids(channel_id, message_id, *([after] if after is not None else []))
+    if not emoji or len(emoji) > 100:
+        raise HTTPException(status_code=400, detail="Некорректная emoji")
+    from discord_bot import bot as discord_bot
+    result = await _call_bot(discord_bot.viewer_get_reaction_users(channel_id, message_id, emoji, after, limit))
+    return result
+
+
+@router.delete("/api/v1/admin/discord-bot/viewer/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/users/{user_id}")
+async def api_viewer_remove_reaction(channel_id: int, message_id: int, emoji: str, user_id: int, request: Request, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "discord_bot", "manage_config"):
+        raise HTTPException(status_code=403)
+    _validate_viewer_ids(channel_id, message_id, user_id)
+    if not emoji or len(emoji) > 100:
+        raise HTTPException(status_code=400, detail="Некорректная emoji")
+    from discord_bot import bot as discord_bot
+    result = await _call_bot(discord_bot.viewer_remove_reaction(channel_id, message_id, emoji, user_id))
+    from routes.admin import log_admin_action
+    log_admin_action(db, admin.id, "discord_viewer_remove_reaction", {
+        "channel_id": str(channel_id), "message_id": str(message_id),
+        "user_id": str(user_id), "emoji": emoji,
+    })
+    return result
+
+
+@router.delete("/api/v1/admin/discord-bot/viewer/channels/{channel_id}/messages/{message_id}/reactions")
+async def api_viewer_clear_reactions(channel_id: int, message_id: int, request: Request, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "discord_bot", "manage_config"):
+        raise HTTPException(status_code=403)
+    _validate_viewer_ids(channel_id, message_id)
+    from discord_bot import bot as discord_bot
+    result = await _call_bot(discord_bot.viewer_clear_reactions(channel_id, message_id))
+    from routes.admin import log_admin_action
+    log_admin_action(db, admin.id, "discord_viewer_clear_reactions", {
+        "channel_id": str(channel_id), "message_id": str(message_id),
+    })
+    return result
+
+
+@router.put("/api/v1/admin/discord-bot/viewer/channels/{channel_id}/messages/{message_id}/pin")
+async def api_viewer_pin_message(channel_id: int, message_id: int, request: Request, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "discord_bot", "manage_config"):
+        raise HTTPException(status_code=403)
+    _validate_viewer_ids(channel_id, message_id)
+    body = await request.json()
+    from discord_bot import bot as discord_bot
+    result = await _call_bot(discord_bot.viewer_set_message_pinned(channel_id, message_id, bool(body.get("pinned"))))
+    from routes.admin import log_admin_action
+    log_admin_action(db, admin.id, "discord_viewer_pin_message", {"channel_id": str(channel_id), "message_id": str(message_id), "pinned": bool(body.get("pinned"))})
+    return result
+
+
+@router.delete("/api/v1/admin/discord-bot/viewer/channels/{channel_id}/messages/{message_id}")
+async def api_viewer_delete_message(channel_id: int, message_id: int, request: Request, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "discord_bot", "manage_config"):
+        raise HTTPException(status_code=403)
+    _validate_viewer_ids(channel_id, message_id)
+    body = await request.json()
+    reason = str(body.get("reason") or "").strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="Укажите причину удаления сообщения")
+    from discord_bot import bot as discord_bot
+    result = await _call_bot(discord_bot.viewer_delete_message(channel_id, message_id, reason))
+    from routes.admin import log_admin_action
+    log_admin_action(db, admin.id, "discord_viewer_delete_message", {"channel_id": str(channel_id), "message_id": str(message_id), "reason": reason[:512]})
+    return result
+
+
+@router.post("/api/v1/admin/discord-bot/viewer/channels/{channel_id}/messages/{message_id}/thread")
+async def api_viewer_create_message_thread(channel_id: int, message_id: int, request: Request, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "discord_bot", "manage_config"):
+        raise HTTPException(status_code=403)
+    _validate_viewer_ids(channel_id, message_id)
+    body = await request.json()
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Укажите имя ветки")
+    from discord_bot import bot as discord_bot
+    result = await _call_bot(discord_bot.viewer_create_message_thread(channel_id, message_id, name))
+    from routes.admin import log_admin_action
+    log_admin_action(db, admin.id, "discord_viewer_create_thread", {"channel_id": str(channel_id), "message_id": str(message_id), "thread_id": result["id"]})
+    return result
+
+
+@router.get("/api/v1/admin/discord-bot/viewer/channels/{channel_id}/members/{member_id}/access")
+async def api_viewer_channel_member_access(channel_id: int, member_id: int, request: Request, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "discord_bot", "view"):
+        raise HTTPException(status_code=403)
+    _validate_viewer_ids(channel_id, member_id)
+    from discord_bot import bot as discord_bot
+    return await _call_bot(discord_bot.viewer_get_channel_member_access(channel_id, member_id))
+
+
+@router.put("/api/v1/admin/discord-bot/viewer/channels/{channel_id}/members/{member_id}/access")
+async def api_viewer_set_channel_member_access(channel_id: int, member_id: int, request: Request, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "discord_bot", "manage_config"):
+        raise HTTPException(status_code=403)
+    _validate_viewer_ids(channel_id, member_id)
+    body = await request.json()
+    access = body.get("access")
+    if access not in {"allow", "deny", "inherit"}:
+        raise HTTPException(status_code=400, detail="access должен быть allow, deny или inherit")
+    from discord_bot import bot as discord_bot
+    result = await _call_bot(discord_bot.viewer_set_channel_member_access(channel_id, member_id, access))
+    from routes.admin import log_admin_action
+    log_admin_action(db, admin.id, "discord_viewer_channel_member_access", {
+        "channel_id": str(channel_id), "member_id": str(member_id), "access": access,
+    })
+    return result
+
+
+@router.post("/api/v1/admin/discord-bot/viewer/channels/{channel_id}/invite")
+async def api_viewer_create_channel_invite(channel_id: int, request: Request, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "discord_bot", "manage_config"):
+        raise HTTPException(status_code=403)
+    _validate_viewer_ids(channel_id)
+    from discord_bot import bot as discord_bot
+    result = await _call_bot(discord_bot.viewer_create_channel_invite(channel_id))
+    from routes.admin import log_admin_action
+    log_admin_action(db, admin.id, "discord_viewer_create_invite", {"channel_id": str(channel_id)})
+    return result
+
+
+@router.delete("/api/v1/admin/discord-bot/viewer/channels/{channel_id}")
+async def api_viewer_delete_channel(channel_id: int, request: Request, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "discord_bot", "manage_config"):
+        raise HTTPException(status_code=403)
+    _validate_viewer_ids(channel_id)
+    body = await request.json()
+    reason = str(body.get("reason") or "").strip()
+    if not reason or len(reason) > 512:
+        raise HTTPException(status_code=400, detail="Для удаления укажите причину длиной до 512 символов")
+    from discord_bot import bot as discord_bot
+    result = await _call_bot(discord_bot.viewer_delete_channel(channel_id, reason))
+    from routes.admin import log_admin_action
+    log_admin_action(db, admin.id, "discord_viewer_delete_channel", {
+        "channel_id": str(channel_id), "channel_name": result.get("channel_name"), "reason": reason,
+    })
+    return result
+
+
+@router.post("/api/v1/admin/discord-bot/viewer/members/{member_id}/voice")
+async def api_viewer_move_member(member_id: int, request: Request, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "discord_bot", "manage_config"):
+        raise HTTPException(status_code=403)
+    _validate_viewer_ids(member_id)
+    body = await request.json()
+    try:
+        target_channel_id = int(body.get("target_channel_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Некорректный ID голосового канала")
+    _validate_viewer_ids(target_channel_id)
+    from discord_bot import bot as discord_bot
+    result = await _call_bot(discord_bot.viewer_move_member(member_id, target_channel_id))
+    from routes.admin import log_admin_action
+    log_admin_action(db, admin.id, "discord_viewer_move_voice_member", {
+        "member_id": str(member_id), "channel_id": str(target_channel_id),
+    })
+    return result
+
+
+@router.get("/api/v1/admin/discord-bot/viewer/audit-log")
+async def api_viewer_audit_log(
+    request: Request, before: Optional[int] = None, limit: int = 50,
+    user_id: Optional[int] = None, action_type: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "discord_bot", "manage_config"):
+        raise HTTPException(status_code=403)
+    for value in (before, user_id):
+        if value is not None:
+            _validate_viewer_ids(value)
+    if action_type is not None and action_type < 0:
+        raise HTTPException(status_code=400, detail="Некорректный тип события Audit Log")
+    from discord_bot import bot as discord_bot
+    return await _call_bot(discord_bot.viewer_get_audit_log(
+        before=before, limit=max(1, min(limit, 100)), user_id=user_id, action_type=action_type,
+    ))
 
 
 @router.post("/api/v1/admin/discord-bot/viewer/channels/{channel_id}/messages")

@@ -39,7 +39,7 @@ import math
 import re
 import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from config import get_settings
@@ -138,6 +138,9 @@ DEFAULT_RUNTIME = {
     "enabled": False,
     "auto_apply": False,       # false = model decisions wait for operator
     "auto_interval_minutes": 0,
+    "live_analysis_enabled": False,
+    "live_analysis_interval_seconds": 180,
+    "live_control_enabled": False,
     "last_run_at": None,
     "history": [],             # short breadcrumbs: {at, mode, applied, rejected, summary<=150}
     # Async manual runs (POST /llm/run returns 202 immediately, a worker
@@ -215,7 +218,8 @@ class LLMError(Exception):
 
 
 def _chat_completions(messages: List[Dict[str, str]], model: str, timeout: float,
-                      temperature: float, top_p: float) -> str:
+                      temperature: float, top_p: float, on_ticket=None,
+                      max_tokens: int = 4096) -> str:
     """Submit to the durable AI Centre queue and wait for its worker result."""
     from services_llm_gateway import LLMGatewayError, poll, submit
 
@@ -223,11 +227,13 @@ def _chat_completions(messages: List[Dict[str, str]], model: str, timeout: float
         "model": model,
         "temperature": temperature,
         "top_p": top_p,
-        "max_tokens": 4096,
+        "max_tokens": max_tokens,
     }
     try:
         ticket = submit("monster_llm", messages, params, timeout=timeout,
                         idempotency_key=uuid.uuid4().hex)
+        if on_ticket is not None:
+            on_ticket(ticket)
         deadline = time.monotonic() + max(timeout + 600, 900)
         while time.monotonic() < deadline:
             outcome = poll(ticket)
@@ -303,22 +309,102 @@ known_species. count не больше 6, hp_multiplier в пределах 0.5-
 6. Ничего кроме JSON. Никакого markdown, никаких комментариев."""
 
 ROUND_PROMPT = """Проанализируй завершённый раунд Barotrauma по переданному отчёту.
+Вход сжат: round = [время начала UTC, длительность в минутах, режим, подлодка]; summary =
+[всего волн, сценарных волн, idle-орды, незавершённые, потери экипажа, потеря прочности,
+средняя эффективность, итоговая эффективность]. outcomes и types содержат итоги по всем волнам.
+waves — максимум 24 равномерно выбранные записи в порядке раунда, каждая в формате
+[название, причина, исход, судьба, бой сек., отступление сек., потери, урон подлодке,
+эффективность, сложность, прогресс, [[вид монстра, количество]]].
+Опирайся на общие итоги и выборку, не делай вид, что выборка содержит все волны.
+crew содержит наблюдаемую численность на старте волн, а не постоянный состав команды.
+quality и assessment показывают пригодность исходных данных для оценки. null — неизвестно.
+Дополнительные столбцы waves: [игроки начало, игроки конец, ожидаемое время,
+незавершена, допуск к адаптации, живы, погибли, неизвестно].
+engagement_seconds в старых отчётах — сумма времени контакта по монстрам, не длительность боя.
+Старые потери в summary — суммы по волнам: перекрывающиеся волны могут повторно учитывать одни потери.
+quality.crew_deaths_are_observed=true означает уникальные подтверждённые смерти персонажей.
+sub_health — 100 минус средний процент воды в отсеках, не прочность корпуса.
+Снижение числа живых персонажей не доказывает смерть: возможны отключение и смена состава.
+tracking_stopped, timeout_engaged, unresolved и исчезновение монстра не доказывают его гибель
+или поражение экипажа. afk не доказывает бездействие игроков. Не оценивай силу только по EMA.
 Укажи характер волн, причины появления, время устранения, исходы, потери и динамику экипажа.
-Если controller_mode=learning, плагин лишь наблюдал ванильный спавн: не приписывай ему изменения сложности или размещения.
-Не выдумывай отсутствующие данные. Верни только JSON по схеме:
-{"conclusion":"содержательное заключение по-русски"}."""
+Если mode (round[2])=learning, плагин лишь наблюдал ванильный спавн: не приписывай ему изменения сложности или размещения.
+Не выдумывай отсутствующие данные. Заключение — до 1800 символов. Верни только JSON по схеме:
+{"conclusion":"содержательное заключение по-русски"}, без markdown и текста снаружи."""
 
 REPORT_PROMPT = """Оцени последние не более 15 завершённых раундов Barotrauma.
 Сопоставь частоту и причины волн, длительность боёв, потери, обходы и тенденцию сложности.
 Раунды с controller_mode=learning отражают только ванильный спавн: не приписывай их исходы контроллеру; настройки предлагай для будущего активного режима.
 Предложи только обоснованные плавные изменения глобальных настроек из editable_keys.
+Используй crew, quality и assessment. Не считай tracking_stopped/таймаут поражением.
+Исторические потери суммируются по волнам и могут дублироваться; sub_health измеряет затопление.
+При assessment.performance=null доказательств силы экипажа недостаточно для смены сложности.
 При недостатке данных оставь config_changes пустым. Верни строго JSON по схеме:
 {"situation":"вывод", "crew_summary":"анализ", "recommendations":[{"title":"совет","detail":"обоснование"}],
 "config_changes":[{"key":"разрешённый ключ","new_value":0.3,"reason":"обоснование"}],
 "spawn_requests":[],"confidence":0.7}. Не выдумывай данные."""
 
+LIVE_ANALYSIS_PROMPT = SYSTEM_PROMPT + """
+
+Сейчас включён режим наблюдения за живым раундом. Дополнительно всегда верни объект
+"scores" со шкалами 0..100: crew_effectiveness, monster_strength, wave_pressure,
+ship_efficiency, а также коротким полем basis. Это экспертные оценки по текущему
+снимку, а не игровые характеристики. Опирайся на crew, monsters, active_waves,
+hulls, reactors, live_metrics и историческую память. При недостатке данных ставь
+null вместо догадки. Не объявляй монстров или волны сильными только по их числу:
+учитывай эффективную сложность и угрозу видов. config_changes всегда [].
+Сначала проверь свежесть, полноту и противоречия данных; затем здоровье каждого человека,
+затопление/кислород/пожары, исправность и питание оборудования; затем тренд нагрузки и
+последнее своё решение. Не путай остановку для ремонта/боя с АФК. Отсутствующее поле — неизвестно.
+Оценка эффективности экипажа относится только к текущему раунду и учитывает исходную
+сложность, состояние лодки, потери и изменение нагрузки; не копируй исторический EMA.
+crew_rows=[id,hp_percent,vitality,max_vitality,dead,incapacitated,outside].
+equipment_rows=[id,kind,condition_percent,voltage,min_voltage,power_on,temperature,fuel,charge,capacity,critical,melted,force,autopilot].
+Отдельно верни live_action={"action":"maintain|hold|spawn","reason_code":"pressure|afk|balanced|recognition_error",
+"hold_seconds":0,"evidence":["краткие факты"]} и findings=[{"kind":"telemetry|recognition|decision",
+"detail":"обнаруженная ошибка или риск","evidence":"факт из снимка"}].
+Если нагрузка опасна — hold до 120 секунд; при неизвестных данных — maintain.
+spawn допустим только когда live_metrics.control.spawn_ready=true; за АФК — только
+при afk_eligible=true (не менее 15 минут наблюдаемого отсутствия активности и прогресса).
+spawn_requests: максимум одна волна из известных видов, до двух монстров, HP 0.8–1.2;
+никаких запросов на спавн при maintain/hold. Если control_enabled=false — лишь рекомендация.
+Проверь своё решение на избыточное давление и повторение ошибочного наказания.
+Думай внимательно, но возвращай короткие проверяемые основания, а не длинное рассуждение.
+Не меняй плагины/код из findings: это диагностические сообщения оператору."""
+
 
 def _build_user_prompt(state: dict, instruction: Optional[str], known_species: List[str]) -> str:
+    if state.get("live_analysis"):
+        world = state.get("world_overview") or {}
+        payload = {
+            "control_enabled": bool(state.get("live_control_enabled")),
+            "controller_mode": (((state.get("config") or {}).get("global") or {}).get("vanilla_events") or {}).get("mode"),
+            "known_species": known_species[:32],
+            "telemetry": _live_telemetry_brief(state.get("telemetry") or {}),
+            "live_metrics": {k: v for k, v in (state.get("live_metrics") or {}).items() if k != "active_waves"},
+            "crew_rows": [[c.get(k) for k in ("id", "hp_percent", "vitality", "max_vitality", "dead", "incapacitated", "outside")]
+                          for c in world.get("crew", {}).get("individuals", [])[:64]],
+            "equipment_rows": [[e.get(k) for k in ("id", "kind", "condition_percent", "voltage", "min_voltage", "power_on", "temperature", "fuel", "charge", "capacity", "critical", "melted", "force", "autopilot")]
+                               for e in world.get("equipment", [])[:24]],
+            "previous_decision": state.get("previous_decision"),
+        }
+        prompt = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        # UTF-8 bytes conservatively bound byte-token vocabularies, leaving
+        # room for system instructions, generation and chat-template overhead.
+        if len(prompt.encode("utf-8")) > 14000:
+            for key in ("recent_waves", "species_threats", "learned_waves", "pending_wave_details"):
+                payload["telemetry"].pop(key, None)
+            prompt = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        if len(prompt.encode("utf-8")) > 14000:
+            payload["wave_sample_truncated"] = True
+            payload["telemetry"]["active_waves"] = payload["telemetry"].get("active_waves", [])[:4]
+            for wave in payload["telemetry"]["active_waves"]:
+                if isinstance(wave.get("monster_counts"), dict):
+                    wave["monster_counts"] = dict(list(wave["monster_counts"].items())[:4])
+            prompt = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        if len(prompt.encode("utf-8")) + len(LIVE_ANALYSIS_PROMPT.encode("utf-8")) > 23000:
+            raise LLMError("Live-снимок превышает бюджет контекста; автоматическое действие отменено")
+        return prompt
     settings = get_settings()
     editable = {**EDITABLE_FLOAT_KEYS, **VANILLA_FLOAT_KEYS}
     registry = {
@@ -342,6 +428,8 @@ def _build_user_prompt(state: dict, instruction: Optional[str], known_species: L
     telemetry = state.get("telemetry") or {}
     dashboard = state.get("dashboard") or {}
     memory = state.get("memory") or {}
+    if state.get("live_analysis"):
+        telemetry = _live_telemetry_brief(telemetry)
 
     brief_memory = {
         "global_performance_ema": memory.get("global_performance_ema"),
@@ -366,7 +454,11 @@ def _build_user_prompt(state: dict, instruction: Optional[str], known_species: L
                     else None
                 ),
             }
-            for name, entry in (memory.get("waves") or {}).items()
+            for name, entry in sorted(
+                (memory.get("waves") or {}).items(),
+                key=lambda item: _number((item[1] or {}).get("times_spawned")) if isinstance(item[1], dict) else 0,
+                reverse=True,
+            )[:12 if state.get("live_analysis") else None]
             if isinstance(entry, dict) and (entry.get("times_spawned") or 0) > 0
         },
         "ships": [
@@ -391,8 +483,16 @@ def _build_user_prompt(state: dict, instruction: Optional[str], known_species: L
         "auto_interval_minutes": settings.monster_llm_auto_interval_minutes,
         "controller_mode": str((global_config.get("vanilla_events") or {}).get("mode") or "controller"),
     }
+    if state.get("live_analysis"):
+        payload["live_analysis"] = True
+        payload["world_overview"] = state.get("world_overview") or {}
+        payload["live_metrics"] = state.get("live_metrics") or {}
     if state.get("round_reports"):
-        payload["round_reports"] = state["round_reports"][-15:]
+        payload["round_reports"] = [
+            _round_history_brief(report)
+            for report in state["round_reports"][-15:]
+            if isinstance(report, dict)
+        ]
     if instruction:
         payload["operator_instruction"] = instruction
 
@@ -404,7 +504,50 @@ def _build_user_prompt(state: dict, instruction: Optional[str], known_species: L
             "Нельзя приписывать исходы решениям контроллера. spawn_requests=[]"
         )
 
-    return "Состояние контроллера:\n" + json.dumps(payload, ensure_ascii=False, indent=1)
+    return "Состояние контроллера:\n" + json.dumps(
+        payload, ensure_ascii=False,
+        separators=(",", ":") if state.get("live_analysis") else None,
+        indent=None if state.get("live_analysis") else 1,
+    )
+
+
+def _live_telemetry_brief(telemetry: dict) -> dict:
+    """Keep only current-round evidence needed for live analysis."""
+    brief = {
+        key: telemetry[key]
+        for key in ("round_active", "round_seconds", "submarine_name", "intensity",
+                    "event_threshold", "pending_waves", "blocking_wave_count",
+                    "tracked_wave_count", "max_simultaneous_waves", "short_term_difficulty",
+                    "difficulty_budget", "pace_ratio", "idle_seconds")
+        if key in telemetry and not isinstance(telemetry[key], (list, dict))
+    }
+    wave_fields = (
+        "wave_name", "spawn_reason", "elapsed_seconds", "expected_repel_seconds",
+        "monsters_alive", "monsters_total", "monsters_dead", "monsters_unknown", "monster_counts", "effective_difficulty",
+        "base_difficulty", "engaged", "in_combat_now", "bypassed", "damage_taken",
+        "last_damage_seconds_ago", "blocking", "non_blocking",
+    )
+    for key, limit in (("active_waves", 12), ("recent_waves", 8), ("pending_waves", 8),
+                       ("species_threats", 24), ("pending_wave_details", 8),
+                       ("learned_waves", 8)):
+        rows = telemetry.get(key)
+        if not isinstance(rows, list):
+            continue
+        if key in ("active_waves", "pending_waves"):
+            brief[key] = [{field: row[field] for field in wave_fields if field in row}
+                          for row in rows[:limit] if isinstance(row, dict)]
+        elif key == "species_threats":
+            fields = ("species", "effective_threat", "threat_ema", "samples", "manual_override")
+            brief[key] = [{field: row[field] for field in fields if field in row}
+                          for row in rows[:limit] if isinstance(row, dict)]
+        elif key == "recent_waves":
+            fields = ("wave_name", "outcome", "fate", "repel_seconds", "performance",
+                      "crew_deaths", "sub_health_loss", "effective_difficulty", "monster_counts")
+            brief[key] = [{field: row[field] for field in fields if field in row}
+                          for row in rows[:limit] if isinstance(row, dict)]
+        else:
+            brief[key] = rows[:limit]
+    return brief
 
 
 # ---------------------------------------------------------------------------
@@ -548,6 +691,20 @@ def _validate_recommendations(decision: Dict[str, Any]) -> Tuple[str, List[dict]
                 continue
             recommendations.append({"title": title or "Рекомендация", "detail": detail})
     return crew_summary, recommendations
+
+
+def _validate_live_scores(raw: Any) -> Dict[str, Any]:
+    """Bound model-generated live-monitor scores; null means evidence is missing."""
+    raw = raw if isinstance(raw, dict) else {}
+    scores: Dict[str, Any] = {}
+    for key in ("crew_effectiveness", "monster_strength", "wave_pressure", "ship_efficiency"):
+        value = raw.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            scores[key] = None
+        else:
+            scores[key] = round(_clamp(float(value), 0.0, 100.0), 1)
+    scores["basis"] = str(raw.get("basis") or "")[:500]
+    return scores
 
 
 def _spawn_requests_to_plans(state: dict, requests: List[dict], run_at: datetime) -> List[dict]:
@@ -696,7 +853,7 @@ def _task(kind: str, ref: str, stage: str, message: str = "", level: str = "info
     from services_ai_tasklog import ai_task_log
 
     from database import SessionLocal
-    db_session = next(SessionLocal())
+    db_session = SessionLocal()
     try:
         ai_task_log(db_session, kind, ref, stage, message, level)
     finally:
@@ -708,7 +865,8 @@ def _task(kind: str, ref: str, stage: str, message: str = "", level: str = "info
 # ---------------------------------------------------------------------------
 
 def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
-                  instruction: Optional[str] = None, task_ref: Optional[str] = None) -> Dict[str, Any]:
+                  instruction: Optional[str] = None, task_ref: Optional[str] = None,
+                  on_ticket=None) -> Dict[str, Any]:
     """mode: analyze (read-only analyzer: situation + crew summary +
     recommendations, no config writes), apply (config changes applied by
     bumping desired_revision), spawn (also add spawn plans)."""
@@ -726,15 +884,18 @@ def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
 
     started = time.monotonic()
     _task(TASK_KIND, ref, "request_sent", f"отправка запроса в агрегатор (модель {settings.monster_llm_model}, режим {mode})")
+    system_prompt = LIVE_ANALYSIS_PROMPT if state.get("live_analysis") else REPORT_PROMPT if state.get("round_reports") else SYSTEM_PROMPT
     content = _chat_completions(
         messages=[
-            {"role": "system", "content": REPORT_PROMPT if state.get("round_reports") else SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
         model=settings.monster_llm_model,
-        timeout=settings.monster_llm_timeout_seconds,
+        timeout=max(settings.monster_llm_timeout_seconds, 600) if state.get("live_analysis") else settings.monster_llm_timeout_seconds,
         temperature=settings.monster_llm_temperature,
         top_p=settings.monster_llm_top_p,
+        on_ticket=on_ticket,
+        **({"max_tokens": 3072} if state.get("live_analysis") else {}),
     )
     _task(TASK_KIND, ref, "response_received", f"ответ получен за {int((time.monotonic() - started) * 1000)} мс, {len(content)} симв.")
 
@@ -746,16 +907,18 @@ def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
         _task(TASK_KIND, ref, "retry", "ответ не был валидным JSON — повторная генерация с строгим напоминанием", "warning")
         content = _chat_completions(
             messages=[
-                {"role": "system", "content": REPORT_PROMPT if state.get("round_reports") else SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
                 {"role": "assistant", "content": content[:2000]},
                 {"role": "user", "content": "Предыдущий ответ не был валидным JSON. "
                                             "Верни ТОЛЬКО JSON-объект по схеме."},
             ],
             model=settings.monster_llm_model,
-            timeout=settings.monster_llm_timeout_seconds,
+            timeout=max(settings.monster_llm_timeout_seconds, 600) if state.get("live_analysis") else settings.monster_llm_timeout_seconds,
             temperature=0.0,
             top_p=settings.monster_llm_top_p,
+            on_ticket=on_ticket,
+            **({"max_tokens": 3072} if state.get("live_analysis") else {}),
         )
         decision = _extract_json(content)
 
@@ -773,16 +936,23 @@ def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
     learning_mode = ((((state.get("config") or {}).get("global") or {}).get("vanilla_events") or {}).get("mode") == "learning")
     spawn_applied, spawn_rejected = ([], []) if learning_mode else _validate_spawn_requests(state, decision.get("spawn_requests"))
     crew_summary, recommendations = _validate_recommendations(decision)
+    scores = _validate_live_scores(decision.get("scores")) if state.get("live_analysis") else None
 
     # In analyze mode nothing is written back to config/plans, but the
     # analyzer text (situation + crew summary + recommendations) is still
     # returned and persisted so the operator can read it in the UI.
-    applied_changes: List[dict] = config_applied if mode in ("apply", "spawn") and not learning_mode else []
+    applied_changes: List[dict] = config_applied if mode in ("apply", "spawn") and not learning_mode and not state.get("live_analysis") else []
     if applied_changes:
         state["config"] = proposal_state["config"]
     spawn_plans: List[dict] = []
     if mode == "spawn" and spawn_applied and not learning_mode:
         spawn_plans = _spawn_requests_to_plans(state, spawn_applied, datetime.utcnow())
+    if state.get("live_analysis"):
+        # Live responses are proposals until the worker revalidates a fresh
+        # snapshot; they must never change persistent difficulty settings.
+        applied_changes = []
+        config_applied = []
+        spawn_plans = []
 
     result = {
         "at": datetime.utcnow().isoformat(),
@@ -800,6 +970,20 @@ def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
         "plan_ids": [plan["id"] for plan in spawn_plans],
         "raw_decision_keys": list(decision.keys()),
     }
+    if state.get("live_analysis"):
+        result["scores"] = scores
+        result["live_metrics"] = state.get("live_metrics") or {}
+        proposal = decision.get("live_action") if isinstance(decision.get("live_action"), dict) else {}
+        action = proposal.get("action") if proposal.get("action") in ("maintain", "hold", "spawn") else "maintain"
+        result["live_proposal"] = {
+            "action": action, "reason_code": str(proposal.get("reason_code") or "balanced")[:32],
+            "hold_seconds": _clamp(_number(proposal.get("hold_seconds")), 0, 120),
+            "evidence": [str(v)[:180] for v in proposal.get("evidence", [])[:4]] if isinstance(proposal.get("evidence"), list) else [],
+            "requests": [{**r, "count": min(r["count"], 2), "hp_multiplier": _clamp(r["hp_multiplier"], .8, 1.2)} for r in spawn_applied[:1]],
+        }
+        result["findings"] = [{"kind": str(f.get("kind") or "recognition")[:32], "detail": str(f.get("detail") or "")[:300],
+                               "evidence": str(f.get("evidence") or "")[:200]}
+                              for f in decision.get("findings", [])[:6] if isinstance(f, dict)] if isinstance(decision.get("findings"), list) else []
     _task(TASK_KIND, ref, "validated",
           f"валидация: применено {len(applied_changes)}, отклонено {len(result['rejected'])}, "
           f"спавн-волн {len(spawn_plans)} (уверенность {result['confidence']:.0%})")
@@ -891,7 +1075,7 @@ def get_llm_deployment_info() -> Dict[str, Any]:
     settings = get_settings()
     return {
         "base_url": settings.ai_dossier_url,
-        "model": settings.monster_llm_model,
+        "model": settings.ai_dossier_model,
         "temperature": settings.monster_llm_temperature,
         "top_p": settings.monster_llm_top_p,
         "timeout_seconds": settings.monster_llm_timeout_seconds,
@@ -905,7 +1089,7 @@ def get_llm_deployment_info() -> Dict[str, Any]:
 # Async manual runs: POST /llm/run only queues (HTTP 202), a scheduler worker
 # executes, the UI polls runtime. A synchronous cycle (queue wait on the
 # shared aggregator lock + up to two model timeouts) easily outlives the
-# 180 s proxy read timeout, which is exactly the stuck "Модель думает…" +
+# 300 s proxy read timeout, which is exactly the stuck "Модель думает…" +
 # HTTP 504 operators saw. Never block an HTTP request on a generation.
 # ---------------------------------------------------------------------------
 
@@ -935,6 +1119,257 @@ def _active_run_live(active: Any, now: datetime) -> bool:
 def _run_lease_seconds() -> float:
     """Cover queue wait and a possible JSON retry before reclaiming work."""
     return 2 * max(float(get_settings().monster_llm_timeout_seconds) + 600, 900) + 120
+
+
+def _snapshot_time(value) -> Optional[datetime]:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None) if parsed.tzinfo else parsed
+    except (TypeError, ValueError):
+        return None
+
+
+def _controller_live_world(telemetry: dict) -> Optional[dict]:
+    snapshot = telemetry.get("live_snapshot")
+    if not isinstance(snapshot, dict) or telemetry.get("round_active") is not True:
+        return None
+    sampled = _snapshot_time(snapshot.get("snapshot_at"))
+    if sampled is None or not -5 <= (datetime.utcnow() - sampled).total_seconds() <= 45:
+        return None
+    if not snapshot.get("round_key") or snapshot.get("round_key") != telemetry.get("round_key"):
+        return None
+    crew_rows = snapshot.get("crew") if isinstance(snapshot.get("crew"), list) else []
+    equipment_rows = snapshot.get("equipment") if isinstance(snapshot.get("equipment"), list) else []
+    crew = [c for c in crew_rows if isinstance(c, dict)]
+    equipment = [e for e in equipment_rows if isinstance(e, dict)]
+    alive = [c for c in crew if c.get("dead") is False]
+    hp = [float(c["hp_percent"]) for c in alive if isinstance(c.get("hp_percent"), (int, float)) and math.isfinite(c["hp_percent"])]
+    return {
+        "round_id": snapshot["round_key"], "snapshot_at": sampled.isoformat(),
+        "snapshot_age_seconds": max(0, (datetime.utcnow() - sampled).total_seconds()),
+        "round_seconds": snapshot.get("round_seconds"),
+        "crew": {"total": len(crew), "alive": len(alive), "dead": sum(c.get("dead") is True for c in crew),
+                 "average_hp_percent": round(sum(hp) / len(hp), 1) if hp else None,
+                 "below_50_hp": sum(v < 50 for v in hp),
+                 "incapacitated": sum(c.get("incapacitated") is True for c in alive),
+                 "outside": sum(c.get("outside") is True for c in alive),
+                 "individuals": crew[:64], "hp_samples": len(hp)},
+        "equipment": sorted(equipment, key=lambda e: _number(e.get("condition_percent")))[:64],
+        "hulls": {"average_water_percent": snapshot.get("water_percent"),
+                  "average_oxygen_percent": snapshot.get("oxygen_percent"), "on_fire": snapshot.get("fire_count")},
+        "activity": {k: snapshot.get(k) for k in ("crew_idle_seconds", "progress_idle_seconds", "combat_waves", "idle_basis")},
+        "quality": {"source": "controller", "crew_complete": len(hp) == len(alive) and len(crew) <= 64
+                    and all(isinstance(c.get("dead"), bool) and isinstance(c.get("incapacitated"), bool) and isinstance(c.get("outside"), bool) for c in crew),
+                    "equipment_complete": len(equipment) <= 64},
+    }
+
+
+def _live_world_overview(db, server: str, telemetry: Optional[dict] = None) -> Optional[dict]:
+    """Return a compact, privacy-minimized live snapshot from World Overview."""
+    direct = _controller_live_world(telemetry or {})
+    if direct is not None:
+        return direct
+    from models import WorldRound
+
+    cutoff = datetime.utcnow() - timedelta(seconds=45)
+    row = db.query(WorldRound).filter(
+        WorldRound.server_name == server,
+        WorldRound.last_update_at >= cutoff,
+    ).order_by(WorldRound.last_update_at.desc()).first()
+    if row is None:
+        return None
+
+    characters = [item for item in (row.last_characters or []) if isinstance(item, dict)]
+    crew = [item for item in characters if item.get("human") is True]
+    living_crew = [item for item in crew if not item.get("dead")]
+    hp_values = [_clamp(_number(item.get("hp")), 0.0, 100.0) for item in living_crew]
+    monsters: Dict[str, int] = {}
+    for item in characters:
+        if item.get("human") is True or item.get("dead"):
+            continue
+        species = str(item.get("species") or "unknown")[:80]
+        monsters[species] = monsters.get(species, 0) + 1
+
+    hulls = [item for item in (row.last_hulls_state or []) if isinstance(item, dict)]
+    reactors = [item for item in (row.last_reactors or []) if isinstance(item, dict)]
+    water_values = [_clamp(_number(item.get("water")), 0.0, 100.0) for item in hulls]
+    oxygen_values = [_clamp(_number(item.get("oxygen")), 0.0, 100.0) for item in hulls]
+    return {
+        "round_id": row.round_id,
+        "level_name": row.level_name,
+        "submarine_name": row.sub_name,
+        "round_seconds": row.last_t,
+        "snapshot_at": row.last_update_at.isoformat() if row.last_update_at else None,
+        "snapshot_age_seconds": max(0, int((datetime.utcnow() - row.last_update_at).total_seconds())) if row.last_update_at else None,
+        "crew": {
+            "total": len(crew), "alive": len(living_crew), "dead": len(crew) - len(living_crew),
+            "average_hp_percent": round(sum(hp_values) / len(hp_values), 1) if hp_values else None,
+            "below_50_hp": sum(1 for hp in hp_values if hp < 50),
+            "underwater": sum(1 for item in living_crew if item.get("water") is True),
+            "incapacitated": sum(1 for item in living_crew if item.get("ragdoll") is True),
+        },
+        "monsters": {
+            "alive": sum(monsters.values()),
+            "by_species": dict(sorted(monsters.items(), key=lambda item: (-item[1], item[0]))[:15]),
+        },
+        "hulls": {
+            "count": len(hulls), "with_water": sum(1 for item in hulls if _number(item.get("water")) > 0),
+            "average_water_percent": round(sum(water_values) / len(water_values), 1) if water_values else None,
+            "average_oxygen_percent": round(sum(oxygen_values) / len(oxygen_values), 1) if oxygen_values else None,
+            "on_fire": sum(1 for item in hulls if _number(item.get("fire")) > 0),
+        },
+        "reactors": {
+            "count": len(reactors), "critical": sum(1 for item in reactors if item.get("critical") is True),
+            "melted": sum(1 for item in reactors if item.get("melted") is True),
+            "average_fuel_percent": round(sum(_clamp(_number(item.get("fuel")), 0.0, 100.0) for item in reactors) / len(reactors), 1) if reactors else None,
+            "power_on": sum(1 for item in reactors if item.get("power_on") is True),
+        },
+    }
+
+
+def _live_metrics(world: dict, telemetry: dict, memory: dict, previous: Optional[dict] = None) -> dict:
+    """Compute reproducible pressure/readiness inputs before the LLM interprets them."""
+    crew = world.get("crew") or {}
+    hulls = world.get("hulls") or {}
+    reactors = world.get("reactors") or {}
+    crew_readiness = None
+    if crew.get("total", 0) and crew.get("average_hp_percent") is not None:
+        crew_readiness = round(
+            0.7 * float(crew["average_hp_percent"])
+            + 0.3 * (100.0 * float(crew.get("alive", 0)) / float(crew["total"])), 1,
+        )
+    hull_readiness = 100.0 - float(hulls["average_water_percent"]) if hulls.get("average_water_percent") is not None else None
+    fire_readiness = (100.0 * (1 - float(hulls.get("on_fire", 0)) / float(hulls["count"]))) if hulls.get("count") else None
+    reactor_readiness = (100.0 * (1 - min(1.0, float(reactors.get("critical", 0) + reactors.get("melted", 0)) / float(reactors["count"])))) if reactors.get("count") else None
+    components = [(crew_readiness, 0.45), (hull_readiness, 0.3), (fire_readiness, 0.15), (reactor_readiness, 0.1)]
+    available = [(value, weight) for value, weight in components if value is not None]
+    ship_readiness = round(sum(value * weight for value, weight in available) / sum(weight for _, weight in available), 1) if available else None
+
+    threat_by_species: Dict[str, float] = {}
+    species_rows = [e for key in ("species_baseline", "species_threats")
+                    for e in (telemetry.get(key) if isinstance(telemetry.get(key), list) else [])]
+    for item in species_rows:
+        if isinstance(item, dict) and item.get("species"):
+            threat_by_species[str(item["species"]).lower()] = max(0.0, _number(item.get("effective_threat", item.get("threat_ema", 1.0)), 1.0))
+    observed_monsters = (world.get("monsters") or {}).get("by_species") or {}
+    observed_threat_points = sum(
+        max(0, int(_number(count))) * threat_by_species.get(str(species).lower(), 1.0)
+        for species, count in observed_monsters.items()
+    )
+    wave_rows = telemetry.get("active_waves") if isinstance(telemetry.get("active_waves"), list) else []
+    waves = []
+    threat_points = 0.0
+    effective_difficulty = 0.0
+    wave_monsters_alive = 0
+    for item in wave_rows[:20]:
+        if not isinstance(item, dict):
+            continue
+        counts = item.get("monster_counts") if isinstance(item.get("monster_counts"), dict) else {}
+        alive = max(0, int(_number(item.get("monsters_alive"))))
+        total = max(0, int(_number(item.get("monsters_total"))))
+        points = sum(max(0, int(_number(count))) * threat_by_species.get(str(species).lower(), 1.0) for species, count in counts.items())
+        points *= min(1.0, alive / total) if total > 0 else 0.0
+        threat_points += points
+        difficulty = max(0.0, _number(item.get("effective_difficulty")))
+        effective_difficulty += difficulty
+        wave_monsters_alive += alive
+        waves.append({
+            "name": str(item.get("wave_name") or "Волна")[:100],
+            "monsters_alive": alive,
+            "monsters_total": max(0, int(_number(item.get("monsters_total")))),
+            "effective_difficulty": round(difficulty, 2),
+            "estimated_threat_points": round(points, 2),
+            "engaged": item.get("in_combat_now", item.get("engaged")),
+            "damage_taken": round(max(0.0, _number(item.get("damage_taken"))), 2),
+        })
+    ship = {
+        "readiness_index": ship_readiness,
+        "index_formula": "crew 45%, hull dryness 30%, fire-free hulls 15%, reactor readiness 10%; missing components excluded",
+        "crew_readiness_index": crew_readiness,
+        "hull_dryness_index": round(hull_readiness, 1) if hull_readiness is not None else None,
+        "fire_readiness_index": round(fire_readiness, 1) if fire_readiness is not None else None,
+        "reactor_readiness_index": round(reactor_readiness, 1) if reactor_readiness is not None else None,
+        "historical_performance_ema": _number(memory.get("global_performance_ema"), 0.0),
+    }
+    equipment = world.get("equipment") or []
+    readiness = {}
+    unknown = []
+    for kind in ("reactor", "engine", "navigation", "supercapacitor"):
+        rows = [e for e in equipment if e.get("kind") == kind]
+        scores = []
+        for e in rows:
+            condition = e.get("condition_percent")
+            if not isinstance(condition, (int, float)) or not math.isfinite(condition):
+                continue
+            operational = None
+            if kind == "reactor" and isinstance(e.get("power_on"), bool) and isinstance(e.get("temperature"), (int, float)) and isinstance(e.get("fuel"), (int, float)):
+                operational = e["power_on"] and e["temperature"] < 80 and e["fuel"] > 0 and e.get("critical") is not True and e.get("melted") is not True
+            elif kind == "supercapacitor" and _number(e.get("capacity")) > 0 and isinstance(e.get("charge"), (int, float)):
+                operational = e["charge"] / e["capacity"] >= 0.2
+            elif kind in ("engine", "navigation") and isinstance(e.get("voltage"), (int, float)) and isinstance(e.get("min_voltage"), (int, float)):
+                operational = e["voltage"] >= max(e["min_voltage"], 0.1)
+            if operational is not None:
+                scores.append(_clamp(float(condition), 0, 100) if operational else 0.0)
+        readiness[kind] = round(max(scores), 1) if scores else None
+        if len(scores) != len(rows) or not rows:
+            unknown.append(kind)
+    hazards = []
+    if crew_readiness is not None:
+        hazards.append((100 - crew_readiness, .35))
+    if hull_readiness is not None:
+        hazards.append((100 - hull_readiness, .25))
+    if world.get("hulls", {}).get("on_fire") is not None:
+        hazards.append((min(100, _number(world["hulls"]["on_fire"]) * 30), .15))
+    known_equipment = [v for v in readiness.values() if v is not None]
+    if known_equipment:
+        hazards.append((100 - min(known_equipment), .25))
+    workload = round(sum(v * w for v, w in hazards) / sum(w for _, w in hazards), 1) if hazards else None
+    activity = world.get("activity") or {}
+    combat = _number(activity.get("combat_waves"), -1)
+    if workload is not None and combat > 0:
+        workload = min(100, workload + min(30, combat * 15))
+    quality = world.get("quality") or {}
+    spawn_ready = bool(quality.get("source") == "controller" and quality.get("crew_complete") and quality.get("equipment_complete")
+                       and not unknown and crew.get("alive", 0) > 0 and not crew.get("incapacitated", 0)
+                       and (_number(crew.get("average_hp_percent"), -1) >= 75)
+                       and not crew.get("below_50_hp", 0)
+                       and hull_readiness is not None and hull_readiness >= 85
+                       and _number(world.get("hulls", {}).get("average_oxygen_percent"), -1) >= 50
+                       and world.get("hulls", {}).get("on_fire") == 0 and combat == 0
+                       and all(v is not None and v >= 60 for v in readiness.values()))
+    afk = spawn_ready and not crew.get("outside", 0) and _number(activity.get("crew_idle_seconds")) >= 900 and _number(activity.get("progress_idle_seconds")) >= 900
+    diagnostics = []
+    for wave in wave_rows:
+        if not isinstance(wave, dict):
+            continue
+        observed = [wave.get(k) for k in ("monsters_alive", "monsters_dead", "monsters_unknown")]
+        if all(isinstance(v, int) for v in observed) and sum(observed) != wave.get("monsters_total"):
+            diagnostics.append("monster_state_count_mismatch:" + str(wave.get("wave_name"))[:80])
+    prior = previous or {}
+    same_round = prior.get("round_key") == world.get("round_id") and world.get("round_id") is not None
+    trend = None
+    if same_round and workload is not None and isinstance(prior.get("workload_index"), (int, float)):
+        trend = round(workload - prior["workload_index"], 1)
+    return {
+        "round_key": world.get("round_id"), "observed_at": world.get("snapshot_at"),
+        "crew": {k: crew.get(k) for k in ("total", "alive", "dead", "average_hp_percent", "below_50_hp", "incapacitated")},
+        "hulls": world.get("hulls") or {},
+        "equipment_readiness": readiness, "equipment_unknown": unknown,
+        "workload_index": workload, "workload_change": trend,
+        "workload_basis": "health 35%, flooding 25%, fires 15%, critical equipment 25%; +15/combat wave (max30); missing evidence is unknown",
+        "activity": activity, "quality": quality, "diagnostics": diagnostics[:8],
+        "round_outcomes": telemetry.get("round_outcomes"),
+        "control": {"spawn_ready": spawn_ready, "afk_eligible": afk,
+                    "hold_recommended": workload is not None and workload >= 50},
+        "active_waves": waves,
+        "wave_count": len(waves),
+        "wave_monsters_alive": wave_monsters_alive,
+        "sum_effective_difficulty": round(effective_difficulty, 2),
+        "estimated_monster_threat_points": round(threat_points, 2),
+        "observed_monster_threat_points": round(observed_threat_points, 2),
+        "monster_threat_basis": "alive counts × plugin effective_threat/threat_ema; 1.0 fallback where no species score exists",
+        "ship": ship,
+    }
 
 
 def _reap_stale_active(runtime: dict, now: datetime, main_db=None, server: str = "") -> bool:
@@ -1017,6 +1452,79 @@ def queue_llm_run(db, server: str, mode: str = "analyze",
     return run
 
 
+def _live_action_plans(state: dict, result: dict, telemetry: dict, runtime: dict, plans: list, now: datetime) -> list:
+    """Recheck after slow inference; return only expiring same-round directives."""
+    def reject(reason):
+        result["live_execution"] = {"status": "skipped", "reason": reason}
+        return []
+    if not runtime.get("enabled") or not runtime.get("live_analysis_enabled") or not runtime.get("live_control_enabled"):
+        return reject("live_control_disabled")
+    mode = (((state.get("config") or {}).get("global") or {}).get("vanilla_events") or {}).get("mode")
+    if mode in ("learning", "native"):
+        return reject("observation_mode")
+    world = _controller_live_world(telemetry)
+    original = state.get("world_overview") or {}
+    sampled = _snapshot_time(original.get("snapshot_at"))
+    if world is None or sampled is None or (now - sampled).total_seconds() > 600 or world["round_id"] != original.get("round_id"):
+        return reject("stale_or_different_round")
+    proposal = result.get("live_proposal") or {}
+    if not proposal.get("evidence") or _number(result.get("confidence")) < .65:
+        return reject("insufficient_evidence")
+    current = _live_metrics(world, telemetry, state.get("memory") or {})
+    result["execution_metrics"] = current
+    previous_load = (state.get("live_metrics") or {}).get("workload_index")
+    if isinstance(previous_load, (int, float)) and current.get("workload_index") is not None and abs(current["workload_index"] - previous_load) > 15:
+        return reject("situation_changed_during_inference")
+    round_key = world["round_id"]
+    for p in plans:
+        if not isinstance(p, dict) or p.get("source") != "llm_live" or p.get("round_key") != round_key:
+            continue
+        expiry = _snapshot_time(p.get("expires_at"))
+        triggered = _snapshot_time(p.get("triggered_at"))
+        if p.get("status") == "planned" and expiry and expiry > now:
+            return reject("live_action_pending")
+        if triggered and (now - triggered).total_seconds() < 180:
+            return reject("live_action_cooldown")
+    action = proposal.get("action")
+    if action == "maintain":
+        return reject("maintain")
+    if action == "spawn":
+        if not current["control"]["spawn_ready"]:
+            return reject("crew_or_ship_under_pressure")
+        if proposal.get("reason_code") == "afk" and not current["control"]["afk_eligible"]:
+            return reject("afk_not_supported")
+        if not proposal.get("requests"):
+            return reject("no_valid_species")
+        validated, rejected = _validate_spawn_requests({**state, "telemetry": telemetry}, proposal["requests"][:1])
+        if not validated or rejected:
+            return reject("species_no_longer_allowed")
+        validated = [{**r, "count": min(r["count"], 2), "hp_multiplier": _clamp(r["hp_multiplier"], .8, 1.2)} for r in validated]
+        catalog = {str(e.get("species")).lower(): e for e in telemetry.get("species_baseline", []) if isinstance(e, dict)}
+        remaining = _number(telemetry.get("max_short_term_difficulty")) - _number(telemetry.get("short_term_difficulty"), float("inf"))
+        cost = 0.0
+        for request in validated:
+            species = catalog.get(request["species"])
+            if species is None:
+                return reject("unknown_monster_strength")
+            base_hp = _number(species.get("base_hp"), float("inf"))
+            cost += request["count"] * max(request["hp_multiplier"], _number(species.get("hp_override"))) * _number(species.get("effective_threat"), float("inf")) * max(1.0, base_hp / 500.0)
+        if cost > min(2.5, remaining):
+            return reject("live_pressure_budget_exceeded")
+        produced = _spawn_requests_to_plans({**state, "telemetry": telemetry}, validated, now)
+    elif action == "hold":
+        if not current["control"]["hold_recommended"]:
+            return reject("hold_not_supported")
+        produced = [{"id": "llm-hold-" + uuid.uuid4().hex[:12], "status": "planned", "monsters": [],
+                     "hold_seconds": _clamp(_number(proposal.get("hold_seconds")), 0, 120)}]
+    else:
+        return reject("unknown_action")
+    for plan in produced:
+        plan.update(source="llm_live", round_key=round_key, control_action=action,
+                    expires_at=(now + timedelta(seconds=120)).isoformat() + "Z", note=proposal.get("reason_code"))
+    result["live_execution"] = {"status": "planned", "action": action, "round_key": round_key}
+    return produced
+
+
 def _apply_llm_result(game_db, row, state: dict, result: dict, admin_id: Optional[int]) -> bool:
     """Write validated changes through the revision channel. Returns True if
     the desired revision was bumped."""
@@ -1025,7 +1533,7 @@ def _apply_llm_result(game_db, row, state: dict, result: dict, admin_id: Optiona
         row.config = state["config"]
         changed = True
     if result.get("spawn_plans"):
-        plans = row.plans if isinstance(row.plans, list) else []
+        plans = list(row.plans) if isinstance(row.plans, list) else []
         plans.extend(result["spawn_plans"])
         row.plans = plans
         changed = True
@@ -1054,8 +1562,48 @@ def _record_run_failure(main_db, server: str, active: dict, error: str) -> None:
     _task(TASK_KIND, f"{server}:{active.get('id')}", "failed", f"Ошибка цикла: {error}"[:300], "error")
 
 
+def _run_cancelled(main_db, server: str, run_id: str) -> bool:
+    run_row = _find_run_record(main_db, server, run_id)
+    return run_row is not None and run_row.status == "cancelled"
+
+
+def cancel_llm_run(main_db, server: str, run_id: str) -> bool:
+    """Cancel a queued or active manual run and its shared-gateway ticket."""
+    from services_llm_gateway import cancel as cancel_ticket
+
+    runtime = get_llm_runtime(main_db, server)
+    pending = runtime.get("pending_run")
+    active = runtime.get("active_run")
+    run = pending if isinstance(pending, dict) and str(pending.get("id")) == run_id else None
+    if run is None and isinstance(active, dict) and str(active.get("id")) == run_id:
+        run = active
+    if run is None:
+        return False
+    ticket_id = run.get("gateway_ticket_id")
+    if ticket_id:
+        cancel_ticket(int(ticket_id))
+    if run is pending:
+        runtime["pending_run"] = None
+    else:
+        runtime["active_run"] = None
+    _record_history(runtime, {
+        "at": datetime.utcnow().isoformat(), "mode": str(run.get("mode") or "?"),
+        "summary": "LLM-цикл отменён оператором", "applied": 0, "rejected": 0, "confidence": 0.0,
+    })
+    save_llm_runtime(main_db, server, runtime)
+    run_row = _find_run_record(main_db, server, run_id)
+    if run_row is not None and run_row.status in ("queued", "running"):
+        run_row.status = "cancelled"
+        run_row.finished_at = datetime.utcnow()
+        run_row.error_message = "Отменено оператором"
+        main_db.commit()
+    _task(TASK_KIND, f"{server}:{run_id}", "cancelled", "LLM-цикл отменён оператором")
+    return True
+
+
 def _process_server_llm_queue(main_db, game_db, server: str, row) -> Optional[Dict[str, Any]]:
     """Claim and execute at most one queued manual run for a server."""
+    from models import MonsterSpawnLLMRun
     runtime = get_llm_runtime(main_db, server)
     now = datetime.utcnow()
     if _reap_stale_active(runtime, now, main_db, server):
@@ -1096,21 +1644,75 @@ def _process_server_llm_queue(main_db, game_db, server: str, row) -> Optional[Di
     }
     mode = active.get("mode") or "analyze"
     instruction = (run_row.instruction if run_row is not None else active.get("instruction")) or None
+    if active.get("source") == "live":
+        try:
+            world_overview = _live_world_overview(game_db, server, state["telemetry"])
+            if world_overview is None:
+                raise LLMError("Снимок обзора мира устарел или отсутствует")
+            state["live_analysis"] = True
+            state["live_control_enabled"] = runtime.get("live_control_enabled", False)
+            state["world_overview"] = world_overview
+            prior = main_db.query(MonsterSpawnLLMRun).filter_by(server=server, source="live", status="succeeded").order_by(MonsterSpawnLLMRun.id.desc()).first()
+            prior_result = prior.result_json if prior and isinstance(prior.result_json, dict) else {}
+            same_round = (prior_result.get("live_metrics") or {}).get("round_key") == world_overview.get("round_id")
+            if same_round:
+                state["previous_decision"] = {k: prior_result.get(k) for k in ("live_proposal", "live_execution", "findings", "rejected", "plan_ids")}
+            state["live_metrics"] = _live_metrics(world_overview, state["telemetry"], state["memory"], prior_result.get("live_metrics") if same_round else None)
+        except Exception as exc:  # noqa: BLE001
+            _record_run_failure(main_db, server, active, str(exc))
+            return {"server": server, "status": "error", "run_id": run_id, "error": str(exc)}
     try:
-        result = run_llm_cycle(main_db, server, state, mode=mode, instruction=instruction, task_ref=task_ref)
+        def remember_ticket(ticket_id: int) -> None:
+            main_db.expire_all()
+            current = get_llm_runtime(main_db, server)
+            current_active = current.get("active_run")
+            if isinstance(current_active, dict) and str(current_active.get("id")) == run_id:
+                current_active["gateway_ticket_id"] = ticket_id
+                save_llm_runtime(main_db, server, current)
+            else:
+                from services_llm_gateway import cancel as cancel_ticket
+                cancel_ticket(ticket_id)
+                raise LLMError("LLM-цикл отменён")
+
+        result = run_llm_cycle(main_db, server, state, mode=mode, instruction=instruction,
+                               task_ref=task_ref, on_ticket=remember_ticket)
     except LLMError as exc:
+        main_db.expire_all()
+        if _run_cancelled(main_db, server, run_id):
+            return {"server": server, "status": "cancelled", "run_id": run_id}
         _record_run_failure(main_db, server, active, str(exc))
         return {"server": server, "status": "error", "run_id": active.get("id"), "error": str(exc)}
     except Exception as exc:  # noqa: BLE001
+        main_db.expire_all()
+        if _run_cancelled(main_db, server, run_id):
+            return {"server": server, "status": "cancelled", "run_id": run_id}
         logger.warning("LLM manual run failed for %s: %s", server, exc)
         _record_run_failure(main_db, server, active, f"Ошибка LLM-цикла: {exc}")
         return {"server": server, "status": "error", "run_id": active.get("id"), "error": str(exc)}
 
+    main_db.expire_all()
+    if _run_cancelled(main_db, server, run_id):
+        return {"server": server, "status": "cancelled", "run_id": run_id}
     admin_id = active.get("requested_by")
+    if active.get("source") == "live":
+        game_db.expire_all()
+        game_db.refresh(row)
+        main_db.expire_all()
+        current_runtime = get_llm_runtime(main_db, server)
+        if _run_cancelled(main_db, server, run_id):
+            return {"server": server, "status": "cancelled", "run_id": run_id}
+        latest_config = row.config if isinstance(row.config, dict) else {}
+        result["spawn_plans"] = _live_action_plans({**state, "config": latest_config}, result,
+            row.telemetry if isinstance(row.telemetry, dict) else {}, current_runtime,
+            row.plans if isinstance(row.plans, list) else [], datetime.utcnow())
+        result["plan_ids"] = [p["id"] for p in result["spawn_plans"]]
     _apply_llm_result(game_db, row, state, result, admin_id)
     game_db.commit()
-    _task(TASK_KIND, task_ref, "applied",
-          f"изменения записаны (desired_revision {row.desired_revision}); применено {len(result.get('applied_changes', []))}, спавн-волн {len(result.get('spawn_plans', []))}")
+    if active.get("source") == "live":
+        _task(TASK_KIND, task_ref, "completed", "live-анализ сохранён; настройки не применялись")
+    else:
+        _task(TASK_KIND, task_ref, "applied",
+              f"изменения записаны (desired_revision {row.desired_revision}); применено {len(result.get('applied_changes', []))}, спавн-волн {len(result.get('spawn_plans', []))}")
 
     # run_llm_cycle already persisted history; persist the result and clear
     # the active lease.
@@ -1151,14 +1753,14 @@ def process_pending_llm_runs() -> List[Dict[str, Any]]:
     from models import AppSetting, MonsterSpawnControl
 
     results: List[Dict[str, Any]] = []
-    main_db = next(SessionLocal())
+    main_db = SessionLocal()
     try:
         # AppSetting contains one JSON object keyed by server. Find queued
         # servers there first so a missing game-state row cannot strand a run.
         setting = main_db.query(AppSetting).filter(AppSetting.key == SETTINGS_KEY).first()
         queued_servers = _pending_servers_from_setting(setting.value if setting is not None else None)
 
-        game_db = next(GameSessionLocal())
+        game_db = GameSessionLocal()
         try:
             rows = game_db.query(MonsterSpawnControl).all()
             rows_by_server = {
@@ -1193,20 +1795,141 @@ def process_pending_llm_runs() -> List[Dict[str, Any]]:
     return results
 
 
-def _round_brief(report: dict, limit: int = 80) -> dict:
-    """Bound LLM input while retaining encounter evidence."""
-    brief = {key: report.get(key) for key in (
-        "round_start_utc", "round_end_utc", "round_duration_seconds", "controller_mode",
-        "submarine_name", "summary") if key in report}
-    waves = report.get("waves") if isinstance(report.get("waves"), list) else []
-    brief["total_waves"] = len(waves)
-    brief["waves"] = [{key: value for key, value in wave.items() if key in (
-        "wave_name", "name", "spawn_reason", "reason", "outcome", "fate",
-        "repel_seconds", "expected_repel_seconds", "engagement_seconds",
-        "crew_deaths", "sub_health_loss", "performance", "monster_counts",
-        "effective_difficulty", "resolved_at_seconds")}
-        for wave in waves[:limit] if isinstance(wave, dict)]
-    return brief
+def _round_brief(report: dict, sample_limit: int = 24) -> dict:
+    """Create a compact, whole-round digest plus an evenly spaced wave sample."""
+    def number(value, digits: int = 1):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        if not math.isfinite(value):
+            return None
+        return round(value, digits) if isinstance(value, float) else value
+
+    def short_text(value, limit: int):
+        return str(value).replace("\r", " ").replace("\n", " ")[:limit] if value is not None else ""
+
+    source_waves = report.get("waves") if isinstance(report.get("waves"), list) else []
+    waves = [wave for wave in source_waves if isinstance(wave, dict)]
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+
+    outcomes: Dict[str, int] = {}
+    wave_types: Dict[str, int] = {}
+    for wave in waves:
+        outcome = short_text(wave.get("outcome") or wave.get("fate") or "unknown", 32)
+        name = short_text(wave.get("wave_name") or wave.get("name") or "unknown", 72)
+        outcomes[outcome] = outcomes.get(outcome, 0) + 1
+        wave_types[name] = wave_types.get(name, 0) + 1
+
+    if len(waves) <= sample_limit:
+        sampled = waves
+    elif sample_limit <= 1:
+        sampled = [waves[-1]]
+    else:
+        indices = {round(index * (len(waves) - 1) / (sample_limit - 1))
+                   for index in range(sample_limit)}
+        sampled = [waves[index] for index in sorted(indices)]
+
+    wave_rows = []
+    for wave in sampled:
+        raw_counts = wave.get("monster_counts")
+        counts = []
+        if isinstance(raw_counts, dict):
+            counts = [[short_text(species, 48), count]
+                      for species, count in sorted(
+                          raw_counts.items(), key=lambda item: number(item[1], 0) or 0, reverse=True)[:4]
+                      if isinstance(count, int) and not isinstance(count, bool)]
+        wave_rows.append([
+            short_text(wave.get("wave_name") or wave.get("name"), 72),
+            short_text(wave.get("spawn_reason") or wave.get("reason"), 64),
+            short_text(wave.get("outcome"), 24),
+            short_text(wave.get("fate"), 24),
+            number(wave.get("engagement_seconds")),
+            number(wave.get("repel_seconds")),
+            number(wave.get("crew_deaths"), 0),
+            number(wave.get("sub_health_loss")),
+            number(wave.get("performance"), 2),
+            number(wave.get("effective_difficulty"), 1),
+            number(wave.get("progress_at_spawn"), 3),
+            counts,
+            number(wave.get("players_alive_at_start"), 0),
+            number(wave.get("players_alive_at_end"), 0),
+            number(wave.get("expected_repel_seconds")),
+            wave.get("unresolved"),
+            wave.get("adaptation_eligible"),
+            number(wave.get("monsters_alive"), 0),
+            number(wave.get("monsters_dead"), 0),
+            number(wave.get("monsters_unknown"), 0),
+        ])
+
+    player_counts = [value for wave in waves
+                     if (value := number(wave.get("players_alive_at_start"), 0)) is not None and value > 0]
+    eligible = [wave for wave in waves
+                if wave.get("adaptation_eligible") is True
+                and wave.get("unresolved") is not True
+                and wave.get("fate") == "destroyed"
+                and wave.get("outcome") == "repelled"
+                and wave.get("monsters_alive") == 0
+                and wave.get("monsters_unknown") == 0
+                and (number(wave.get("monsters_dead"), 0) or 0) > 0
+                and (number(wave.get("effective_difficulty")) or 0) > 0
+                and (number(wave.get("players_alive_at_start"), 0) or 0) > 0
+                and number(wave.get("performance")) is not None]
+    stopped = sum(wave.get("fate") == "tracking_stopped" or wave.get("unresolved") is True for wave in waves)
+    duration_seconds = number(report.get("round_duration_seconds"), 0)
+    return {
+        "round": [
+            report.get("round_start_utc"),
+            round(duration_seconds / 60) if duration_seconds is not None else None,
+            short_text(report.get("controller_mode"), 24),
+            short_text(report.get("submarine_name"), 72),
+        ],
+        "summary": [
+            number(summary.get("total_waves_spawned"), 0),
+            number(summary.get("scenario_waves_spawned"), 0),
+            number(summary.get("idle_hordes_spawned"), 0),
+            number(summary.get("unresolved_waves"), 0),
+            number(summary.get("total_crew_deaths"), 0),
+            number(summary.get("total_sub_health_loss")),
+            number(summary.get("average_performance"), 2),
+            number(summary.get("final_global_performance_ema"), 2),
+        ],
+        "wave_count": len(waves),
+        "outcomes": outcomes,
+        "submarine": {key: report["submarine"][key] for key in ("name", "type", "hash", "width", "height")
+                      if key in report["submarine"]} if isinstance(report.get("submarine"), dict) else {},
+        "crew": {
+            "initial_players": number(report.get("initial_player_count"), 0)
+            if number(report.get("initial_player_count_sample_seconds")) is not None else None,
+            "initial_sample_seconds": number(report.get("initial_player_count_sample_seconds")),
+            "observed_players_min": min(player_counts) if player_counts else None,
+            "observed_players_max": max(player_counts) if player_counts else None,
+            "wave_samples": len(player_counts),
+        },
+        "quality": {
+            "tracking_stopped": stopped,
+            "missing_difficulty": sum((number(wave.get("effective_difficulty")) or 0) <= 0 for wave in waves),
+            "legacy_assessment": any("adaptation_eligible" not in wave for wave in waves),
+            "loss_totals_are_wave_exposures": True,
+            "crew_deaths_are_observed": summary.get("crew_deaths_are_observed") is True,
+        },
+        "assessment": {
+            "basis": "completed_isolated_encounters; crew, ship and wave effects are not separable",
+            "performance": round(sum(wave["performance"] for wave in eligible) / len(eligible), 3) if eligible else None,
+            "samples": len(eligible),
+            "sample_support": round(min(len(eligible) / 5, 1.0), 2),
+        },
+        "types": sorted(wave_types.items(), key=lambda item: (-item[1], item[0]))[:8],
+        "waves": wave_rows,
+    }
+
+
+def _round_history_brief(report: dict) -> dict:
+    """Small history entry for multi-round cycles; never pass full report JSON."""
+    if isinstance(report.get("round"), list) and isinstance(report.get("summary"), list):
+        brief = {key: report[key] for key in ("round", "summary", "wave_count", "outcomes", "types", "submarine", "crew", "quality", "assessment")
+                 if key in report}
+        brief["waves"] = (report.get("waves") or [])[:3]
+        return brief
+    return _round_brief(report, sample_limit=3)
 
 
 def process_pending_round_reports() -> List[Dict[str, Any]]:
@@ -1246,21 +1969,35 @@ def process_pending_round_reports() -> List[Dict[str, Any]]:
             game_db.query(MonsterSpawnRoundReport).filter(
                 MonsterSpawnRoundReport.server == server,
                 MonsterSpawnRoundReport.analysis_status == "running",
-                MonsterSpawnRoundReport.analysis_started_at < datetime.utcnow() - timedelta(minutes=45),
+                (MonsterSpawnRoundReport.analysis_started_at.is_(None)) |
+                (MonsterSpawnRoundReport.analysis_started_at < datetime.utcnow() - timedelta(minutes=45)),
             ).update({"analysis_status": "pending"}, synchronize_session=False)
             game_db.commit()
-            pending = game_db.query(MonsterSpawnRoundReport).filter_by(
+            pending_id = game_db.query(MonsterSpawnRoundReport.id).filter_by(
                 server=server, analysis_status="pending").order_by(MonsterSpawnRoundReport.id).first()
-            if pending is not None:
-                pending.analysis_status = "running"
-                pending.analysis_started_at = datetime.utcnow()
+            if pending_id is not None:
+                pending_id = pending_id[0]
+                claimed_at = datetime.utcnow()
+                claimed = game_db.query(MonsterSpawnRoundReport).filter_by(
+                    id=pending_id, analysis_status="pending").update(
+                        {"analysis_status": "running", "analysis_started_at": claimed_at},
+                        synchronize_session=False)
                 game_db.commit()
+                pending = game_db.query(MonsterSpawnRoundReport).filter_by(id=pending_id).first() if claimed else None
+            else:
+                pending = None
+            if pending is not None:
                 try:
+                    settings = get_settings()
+                    round_brief = json.dumps(
+                        _round_brief(pending.report_json or {}),
+                        ensure_ascii=False, separators=(",", ":"))
                     content = _chat_completions(
                         [{"role": "system", "content": ROUND_PROMPT},
-                         {"role": "user", "content": json.dumps(_round_brief(pending.report_json or {}), ensure_ascii=False)}],
-                        get_settings().monster_llm_model, get_settings().monster_llm_timeout_seconds,
-                        get_settings().monster_llm_temperature, get_settings().monster_llm_top_p)
+                         {"role": "user", "content": round_brief}],
+                        settings.monster_llm_model, max(settings.monster_llm_timeout_seconds, 600.0),
+                        settings.monster_llm_temperature, settings.monster_llm_top_p,
+                        max_tokens=2048)
                     conclusion = str(_extract_json(content).get("conclusion") or "").strip()[:8000]
                     if not conclusion:
                         raise LLMError("Модель не вернула заключение")
@@ -1285,8 +2022,6 @@ def process_pending_round_reports() -> List[Dict[str, Any]]:
             if milestone is None:
                 continue
             latest = list(reversed(all_rounds[max(0, milestone - 15):milestone]))
-            if any(entry.analysis_status in ("pending", "running") for entry in latest):
-                continue
             marker = f"round-report:{latest[0].id}"
             control = game_db.query(MonsterSpawnControl).filter_by(server=server).first()
             if control is None:
@@ -1298,7 +2033,7 @@ def process_pending_round_reports() -> List[Dict[str, Any]]:
             main_db.commit()
             state = {"config": control.config or {}, "memory": control.memory or {},
                      "telemetry": {}, "dashboard": {},
-                     "round_reports": [_round_brief(entry.report_json or {}, 20) for entry in reversed(latest)]}
+                     "round_reports": [_round_history_brief(entry.report_json or {}) for entry in latest]}
             try:
                 result = run_llm_cycle(main_db, server, state, mode="analyze", task_ref=f"{server}:{run_id}")
                 _finish_run_record(main_db, record, result, None)
@@ -1319,9 +2054,9 @@ def run_auto_cycle_for_all_servers() -> List[Dict[str, Any]]:
     from models import MonsterSpawnControl
 
     results: List[Dict[str, Any]] = []
-    main_db = next(SessionLocal())
+    main_db = SessionLocal()
     try:
-        game_db = next(GameSessionLocal())
+        game_db = GameSessionLocal()
         try:
             rows = game_db.query(MonsterSpawnControl).all()
             for row in rows:
@@ -1382,5 +2117,71 @@ def run_auto_cycle_for_all_servers() -> List[Dict[str, Any]]:
         finally:
             game_db.close()
     finally:
+        main_db.close()
+    return results
+
+
+def enqueue_live_analyses() -> List[Dict[str, Any]]:
+    """Queue due live observations for servers with fresh plugin snapshots."""
+    from database import GameSessionLocal, SessionLocal
+    from models import MonsterSpawnControl, MonsterSpawnLLMRun
+
+    results: List[Dict[str, Any]] = []
+    main_db = SessionLocal()
+    game_db = GameSessionLocal()
+    try:
+        for row in game_db.query(MonsterSpawnControl).all():
+            server = (row.server or "").strip().upper()
+            if not server:
+                continue
+            runtime = get_llm_runtime(main_db, server)
+            if not runtime.get("enabled") or not runtime.get("live_analysis_enabled"):
+                continue
+            telemetry = row.telemetry if isinstance(row.telemetry, dict) else {}
+            if telemetry.get("round_active") is not True:
+                continue
+            if runtime.get("pending_run") or _active_run_live(runtime.get("active_run"), datetime.utcnow()):
+                continue
+            if main_db.query(MonsterSpawnLLMRun.id).filter(
+                MonsterSpawnLLMRun.server == server,
+                MonsterSpawnLLMRun.status.in_(("queued", "running")),
+            ).first():
+                continue
+            game_db.commit()
+            game_db.refresh(row)
+            if _live_world_overview(game_db, server, row.telemetry if isinstance(row.telemetry, dict) else {}) is None:
+                continue
+
+            try:
+                interval = max(120, min(600, int(runtime.get("live_analysis_interval_seconds", 180))))
+            except (TypeError, ValueError):
+                interval = 180
+            latest = main_db.query(MonsterSpawnLLMRun).filter(
+                MonsterSpawnLLMRun.server == server,
+                MonsterSpawnLLMRun.source == "live",
+            ).order_by(MonsterSpawnLLMRun.requested_at.desc()).limit(6).all()
+            last_run = latest[0] if latest else None
+            consecutive_failures = 0
+            for prior in latest:
+                if prior.status != "failed":
+                    break
+                consecutive_failures += 1
+            backoff_seconds = min(900, interval * (2 ** consecutive_failures)) if consecutive_failures else interval
+            last_requested = (last_run.finished_at or last_run.requested_at) if last_run else None
+            if last_requested and (datetime.utcnow() - last_requested).total_seconds() < backoff_seconds:
+                continue
+
+            run_id = uuid.uuid4().hex[:12]
+            _create_run_record(main_db, server, "analyze", "Мониторинг раунда", "live", run_id, None)
+            runtime["pending_run"] = {
+                "id": run_id, "source": "live", "mode": "analyze",
+                "instruction": "Мониторинг раунда", "requested_at": datetime.utcnow().isoformat(),
+                "requested_by": None, "attempts": 0,
+            }
+            save_llm_runtime(main_db, server, runtime)
+            _task(TASK_KIND, f"{server}:{run_id}", "queued", f"live-анализ поставлен в очередь; интервал {interval} с")
+            results.append({"server": server, "status": "queued", "run_id": run_id})
+    finally:
+        game_db.close()
         main_db.close()
     return results

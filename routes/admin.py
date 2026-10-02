@@ -8,7 +8,7 @@ from typing import Optional
 import secrets
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from database import get_db
 from security import (
     check_permission,
@@ -18,6 +18,10 @@ from security import (
     get_permission_policy_mode,
     get_active_admin_session,
     hash_admin_session_token,
+    hash_admin_browser_fingerprint,
+    ADMIN_SESSION_FINGERPRINTED_TTL,
+    ADMIN_SESSION_FALLBACK_TTL,
+    ADMIN_BROWSER_FINGERPRINT_COOKIE,
     enforce_cookie_csrf,
     audit_context,
     log_security_event,
@@ -360,7 +364,7 @@ async def get_me(request: Request, db: Session = Depends(get_db), current_admin:
     _my_depts = (
         db.query(Department)
         .join(DepartmentMember, DepartmentMember.department_id == Department.id)
-        .filter(DepartmentMember.admin_id == current_admin.id, Department.is_archived.is_(False))
+        .filter(DepartmentMember.admin_id == current_admin.id, DepartmentMember.is_excluded.is_(False), Department.is_archived.is_(False))
         .order_by(Department.name)
         .all()
     )
@@ -514,7 +518,9 @@ def _issue_admin_session(db: Session, admin: AdminUser, response, request: Reque
     дальше нигде не приходилось различать."""
     token = secrets.token_urlsafe(32)
     now = datetime.utcnow()
-    expires = now + timedelta(seconds=settings.session_max_age)
+    fingerprint_hash = hash_admin_browser_fingerprint(request.cookies.get(ADMIN_BROWSER_FINGERPRINT_COOKIE))
+    session_ttl = ADMIN_SESSION_FINGERPRINTED_TTL if fingerprint_hash else ADMIN_SESSION_FALLBACK_TTL
+    expires = now + session_ttl
     db.add(AdminSession(
         admin_id=admin.id,
         token=hash_admin_session_token(token),
@@ -524,13 +530,15 @@ def _issue_admin_session(db: Session, admin: AdminUser, response, request: Reque
         last_seen_ip=request.client.host if request.client else None,
         user_agent=(request.headers.get("user-agent") or "")[:500] or None,
         auth_type=auth_type,
+        browser_fingerprint_hash=fingerprint_hash,
+        browser_fingerprint_bound=bool(fingerprint_hash),
         revoked=0,
     ))
     admin.last_login = now
     db.commit()
     response.set_cookie(
         "admin_token", token,
-        httponly=True, max_age=settings.session_max_age,
+        httponly=True, expires=expires.replace(tzinfo=timezone.utc),
         samesite="lax", secure=not settings.debug,
     )
 
@@ -1135,6 +1143,7 @@ async def api_create_admin_user(request: Request, db: Session = Depends(get_db),
         # Privileges stay wiped (delete_admin cleared them on delete); an
         # admin has to re-grant a group/permissions explicitly.
         existing.is_deleted = 0
+        existing.auto_provision_excluded = False
         existing.role = role
         db.commit()
         log_admin_action(db, current_admin.id, "restore_admin", {
