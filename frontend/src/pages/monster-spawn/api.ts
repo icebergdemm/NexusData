@@ -74,11 +74,13 @@ export interface SpawnScheme {
 export interface SpawnPlan extends SpawnWave {
   id: string
   wave_name?: string
-  source: "automatic" | "manual"
-  status: "planned" | "cancelled" | "spawned" | "expired"
+  source: "automatic" | "manual" | "manual_immediate" | "llm_live"
+  status: "planned" | "cancelled" | "spawned" | "expired" | "spawning" | "rejected" | "applied"
   x: number
   y: number
   note?: string
+  expires_at?: string
+  round_key?: string
 }
 
 export interface SpawnConfig { global: Record<string, unknown>; waves: SpawnWave[] }
@@ -489,6 +491,8 @@ export const monsterSpawnApi = {
   retryRoundAnalysis: (server: string, reportId: number) =>
     api.post<{ status: string }>(`/api/v1/admin/monster-spawn/reports/${reportId}/retry?server=${encodeURIComponent(server)}`, {}),
   creatures: () => api.get<{ creatures: CreatureInfo[] }>(`/api/v1/admin/monster-spawn/creatures`),
+  spawnNow: (server: string, body: { kind: "monster" | "wave" | "learned"; key: string; count?: number }) =>
+    api.post<{ status: string; plan_id: string }>(`/api/v1/admin/monster-spawn/spawn-now?server=${encodeURIComponent(server)}`, body),
   llmRuntime: (server: string) =>
     api.get<{ runtime: LLMRuntime; deployment: LLMDeployment; endpoint_configured: boolean }>(`/api/v1/admin/monster-spawn/llm/runtime?server=${encodeURIComponent(server)}`),
   llmRuns: (server: string, limit = 30) =>

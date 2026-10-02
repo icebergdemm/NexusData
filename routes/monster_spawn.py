@@ -1,7 +1,9 @@
 """Declarative control plane for the MonsterSpawnController game plugin."""
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import json
+import copy
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -42,6 +44,12 @@ class AdminUpdate(BaseModel):
     config: Optional[Dict[str, Any]] = None
     memory: Optional[Dict[str, Any]] = None
     plans: Optional[List[Dict[str, Any]]] = None
+
+
+class ImmediateSpawn(BaseModel):
+    kind: str = Field(pattern="^(monster|wave|learned)$")
+    key: str = Field(min_length=1, max_length=200)
+    count: int = Field(default=1, ge=1, le=30)
 
 
 def _normalize_server(server: str) -> str:
@@ -148,6 +156,9 @@ def _normalize_config(value: Any) -> Dict[str, Any]:
         "min_monster_health_fixed": 0,
     }
     config["global"] = {**defaults, **global_config}
+    vanilla = config["global"].get("vanilla_events")
+    if isinstance(vanilla, dict) and vanilla.get("mode") == "checker":
+        config["global"]["vanilla_events"] = {**vanilla, "mode": "learned_controller"}
     # null = derive from single_wave_mode on the plugin side; materialize the
     # effective value here so the UI/LLM can edit it as a plain number.
     if config["global"].get("max_simultaneous_waves") is None:
@@ -468,7 +479,9 @@ def admin_update(
         row.memory = payload.memory
         changed = True
     if payload.plans is not None:
-        row.plans = payload.plans
+        # Dedicated commands are authoritative; a stale editor must not erase or replay them.
+        immediate = [p for p in (row.plans or []) if p.get("source") == "manual_immediate"]
+        row.plans = [p for p in payload.plans if p.get("source") != "manual_immediate"] + immediate
         changed = True
     if not changed:
         raise HTTPException(status_code=400, detail="Нет изменений")
@@ -479,6 +492,72 @@ def admin_update(
     db.commit()
     db.refresh(row)
     return _serialize(row)
+
+
+def _immediate_spawn_plan(row: MonsterSpawnControl, payload: ImmediateSpawn) -> dict:
+    telemetry = row.telemetry if isinstance(row.telemetry, dict) else {}
+    now = datetime.utcnow()
+    seen = row.last_seen_at
+    if (not telemetry.get("round_active") or not telemetry.get("round_key") or
+            seen is None or not 0 <= (now - seen.replace(tzinfo=None)).total_seconds() <= 45):
+        raise HTTPException(status_code=409, detail="Нет свежей телеметрии активного раунда")
+    live = telemetry.get("live_snapshot") or {}
+    try:
+        sampled = datetime.fromisoformat(str(live.get("snapshot_at", "")).replace("Z", "+00:00"))
+        if sampled.tzinfo:
+            sampled = sampled.astimezone(timezone.utc).replace(tzinfo=None)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=409, detail="Нет времени снимка текущего раунда")
+    if live.get("round_key") != telemetry["round_key"] or not 0 <= (now - sampled).total_seconds() <= 45:
+        raise HTTPException(status_code=409, detail="Снимок раунда устарел")
+    if payload.kind == "monster":
+        species = {str(c.get("id", "")).lower() for c in _creature_catalog() if c.get("group") != "human"}
+        species.update(str(c.get("species", "")).lower() for c in telemetry.get("species_baseline", []) if isinstance(c, dict))
+        if payload.key.lower() not in species:
+            raise HTTPException(status_code=400, detail="Вид отсутствует в каталоге сервера")
+        wave = {"name": f"manual:{payload.key}", "spawn_type": "around", "scatter": 500,
+                "monsters": [{"species": payload.key, "count": payload.count, "hp_multiplier": 1}]}
+    else:
+        config = row.config if isinstance(row.config, dict) else {}
+        memory = row.memory if isinstance(row.memory, dict) else {}
+        if payload.kind == "wave":
+            wave = next((w for w in config.get("waves", []) if w.get("name") == payload.key), None)
+        else:
+            learned = memory.get("learned_waves", {}).get(payload.key, {})
+            wave = learned.get("wave") if isinstance(learned, dict) else None
+        if not isinstance(wave, dict):
+            raise HTTPException(status_code=404, detail="Волна не найдена")
+        wave = copy.deepcopy(wave)
+    monsters = wave.get("monsters", [])
+    try:
+        amount = sum(max(int(m.get("count", 0)), int(m.get("amount_max", 0))) for m in monsters)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Некорректный состав волны")
+    if not monsters or amount < 1 or amount > 50:
+        raise HTTPException(status_code=400, detail="Для немедленного спавна допустимо от 1 до 50 монстров")
+    return {**wave, "id": "manual-" + uuid.uuid4().hex, "wave_name": wave.get("name", payload.key),
+            "source": "manual_immediate", "status": "planned", "round_key": telemetry["round_key"],
+            "expires_at": (now + timedelta(seconds=120)).isoformat() + "Z",
+            "delay_between_spawns": 0, "chain_wave": None, "reset_time": 0, "chance": 1}
+
+
+@admin_router.post("/spawn-now")
+def admin_spawn_now(payload: ImmediateSpawn, server: str = Query(...),
+                    admin: AdminUser = Depends(_current_admin), db: Session = Depends(get_game_db)):
+    _require(admin, "edit")
+    row = _get_or_create(db, _normalize_server(server))
+    db.refresh(row, with_for_update=True)
+    plan = _immediate_spawn_plan(row, payload)
+    if any(p.get("source") == "manual_immediate" and p.get("status") in {"planned", "spawning"}
+           and p.get("round_key") == plan["round_key"] and str(p.get("expires_at", "")) > datetime.utcnow().isoformat()
+           for p in (row.plans or [])):
+        raise HTTPException(status_code=409, detail="Предыдущая команда ещё выполняется")
+    row.plans = list(row.plans or []) + [plan]
+    row.desired_revision = (row.desired_revision or 0) + 1
+    row.updated_by_admin_id = admin.id
+    row.updated_at = datetime.utcnow()
+    db.commit()
+    return {"status": "queued", "plan_id": plan["id"]}
 
 
 @admin_router.post("/reset-adaptations")

@@ -110,6 +110,15 @@ def test_old_round_stale_data_and_disabled_control_cancel_actions():
     assert not service._live_action_plans(state, result, telemetry, runtime, [], datetime.utcnow())
 
 
+@pytest.mark.parametrize("mode", ["native", "learning", "disabled"])
+def test_observation_and_disabled_modes_cannot_receive_live_spawn_actions(mode):
+    telemetry = snapshot()
+    state, result, runtime = action_inputs(telemetry)
+    state["config"]["global"]["vanilla_events"]["mode"] = mode
+    assert not service._live_action_plans(state, result, telemetry, runtime, [], datetime.utcnow())
+    assert result["live_execution"]["reason"] == "observation_mode"
+
+
 def test_budget_pending_and_cooldown_bound_live_actions():
     telemetry = snapshot()
     state, result, runtime = action_inputs(telemetry)

@@ -1466,7 +1466,7 @@ def _live_action_plans(state: dict, result: dict, telemetry: dict, runtime: dict
     if not runtime.get("enabled") or not runtime.get("live_analysis_enabled") or not runtime.get("live_control_enabled"):
         return reject("live_control_disabled")
     mode = (((state.get("config") or {}).get("global") or {}).get("vanilla_events") or {}).get("mode")
-    if mode in ("learning", "native"):
+    if mode in ("learning", "native", "disabled") or ((state.get("config") or {}).get("global") or {}).get("enabled") is False:
         return reject("observation_mode")
     world = _controller_live_world(telemetry)
     original = state.get("world_overview") or {}

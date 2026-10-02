@@ -24,6 +24,7 @@ import { canDo, useCurrentAdmin } from "@/lib/auth"
 import { baseChartOptions, barDatasetDefaults, CHART_COLORS, lineDatasetDefaults } from "@/lib/chart-theme"
 import { formatBrowserDate } from "@/lib/format-date"
 import { worldStateApi } from "@/pages/world-overview/api"
+import { SpawnNowDialog } from "./SpawnNowDialog"
 import { WorldCanvas, type WorldMarker } from "@/pages/world-overview/WorldCanvas"
 import {
   monsterSpawnApi,
@@ -53,6 +54,7 @@ import {
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value))
 const number = (value: string) => Number.isFinite(Number(value)) ? Number(value) : 0
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value)
+const spawnModeLabel = (mode?: string) => ({ controller: "Контроллер", learned_controller: "Контроллер изученных волн", checker: "Контроллер изученных волн", learning: "Обучение", native: "Ванильный", disabled: "Отключён" } as Record<string, string>)[mode ?? "controller"] ?? mode
 
 const emptyWave = (): SpawnWave => ({
   name: "Новая волна", min_progress: 0, max_progress: 0, min_round_time: 0, min_players: 0,
@@ -115,7 +117,7 @@ function RoundReportRow({ report, onOpen }: { report: RoundReport; onOpen: (repo
     <div className="min-w-0 space-y-2">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className="truncate text-sm font-semibold">{report.submarine_name || "Корабль не указан"}</span>
-        <Badge variant="outline" className="text-[10px]">{report.controller_mode === "learning" ? "Обучение" : "Контроллер"}</Badge>
+        <Badge variant="outline" className="text-[10px]">{spawnModeLabel(report.controller_mode)}</Badge>
         <Badge variant={status.variant} className="text-[10px]">{status.label}</Badge>
       </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
@@ -146,7 +148,7 @@ function RoundReportDetails({ report, server, retrying, onRetry, onDownload, onC
       <DialogHeader className="border-b px-6 py-5 pr-12">
         <div className="flex flex-wrap items-center gap-2"><Badge variant={status.variant}>{status.label}</Badge><Badge variant="outline">{server}</Badge></div>
         <DialogTitle className="mt-2 text-lg">{report.submarine_name || "Отчёт раунда"}</DialogTitle>
-        <DialogDescription>{report.round_start_utc ? formatBrowserDate(report.round_start_utc) : "Дата неизвестна"} · {report.controller_mode === "learning" ? "Обучение · ванильный спавн" : "Контроллер монстров"} · {Math.max(0, Math.round(Number(report.round_duration_seconds ?? 0) / 60))} мин</DialogDescription>
+        <DialogDescription>{report.round_start_utc ? formatBrowserDate(report.round_start_utc) : "Дата неизвестна"} · {spawnModeLabel(report.controller_mode)} · {Math.max(0, Math.round(Number(report.round_duration_seconds ?? 0) / 60))} мин</DialogDescription>
       </DialogHeader>
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-4">
         <section className="space-y-2">
@@ -602,7 +604,6 @@ function ActiveWaveCard({ wave, override, onToggleNonBlocking, onOpenOverride }:
       <div>
         <div className="font-mono text-sm transition-colors duration-500" style={{ color: timerColor }}>{Math.round(wave.elapsed_seconds)}с</div>
         <div className="text-[10px] text-muted-foreground">Существует уже:</div>
-        <div className="mt-1 h-1 overflow-hidden rounded-full bg-muted/60"><div className="h-full rounded-full transition-[width] duration-500" style={{ width: `${timeoutProgress * 100}%`, background: "linear-gradient(90deg, #22c55e, #eab308, #ef4444)" }} /></div>
         <div className="mt-1 text-[10px] text-muted-foreground">таймаут через {timeoutRemaining}с</div>
       </div>
       <div><div className="font-mono text-sm">{wave.monsters_alive}/{wave.monsters_total}</div><div className="text-[10px] text-muted-foreground">живых монстров</div></div>
@@ -1061,6 +1062,7 @@ export function MonsterSpawnPage() {
   const queryClient = useQueryClient()
   const { data: admin } = useCurrentAdmin()
   const [server, setServer] = useState("ASPER1")
+  const [spawnNowOpen, setSpawnNowOpen] = useState(false)
   const [draft, setDraft] = useState<MonsterSpawnState | null>(null)
   const [resetDialogOpen, setResetDialogOpen] = useState(false)
   const [resetCountdown, setResetCountdown] = useState(10)
@@ -1156,7 +1158,7 @@ export function MonsterSpawnPage() {
     onError: (error: Error) => toast.error(error.message),
   })
   const updateDraft = (fn: (next: MonsterSpawnState) => void) => { if (!draft) return; const next = clone(draft); fn(next); setDraft(next); setDirty(true) }
-  const filteredPlans = useMemo(() => (draft?.plans ?? []).filter((plan) => {
+  const filteredPlans = useMemo(() => (draft?.plans ?? []).filter((plan) => plan.source !== "manual_immediate").filter((plan) => {
     if (planStatus !== "all" && plan.status !== planStatus) return false
     const query = planSearch.trim().toLowerCase()
     return !query || `${plan.wave_name} ${plan.name} ${plan.note ?? ""} ${plan.x},${plan.y} ${plan.status}`.toLowerCase().includes(query)
@@ -1207,7 +1209,7 @@ export function MonsterSpawnPage() {
   const waveLogs = report.wave_logs
   const shipLogs = report.ship_logs
   const selectedPlan = draft.plans.find((plan) => plan.id === selectedPlanId) ?? null
-  const markers: WorldMarker[] = draft.plans.map((plan) => ({ id: plan.id, x: plan.x, y: plan.y, label: plan.wave_name || plan.name, color: plan.source === "manual" ? "#59D6C2" : "#F6C453", muted: plan.status === "cancelled", draggable: true }))
+  const markers: WorldMarker[] = draft.plans.filter(plan => plan.source !== "manual_immediate" && Number.isFinite(plan.x) && Number.isFinite(plan.y)).map((plan) => ({ id: plan.id, x: plan.x, y: plan.y, label: plan.wave_name || plan.name, color: plan.source === "manual" ? "#59D6C2" : "#F6C453", muted: plan.status === "cancelled", draggable: true }))
   const wavePalette = ["#F6C453", "#E879F9", "#60A5FA", "#FB7185", "#34D399", "#A78BFA", "#F97316"]
   const waveMapRows = telemetryList<Record<string, unknown>>(telemetry.map_waves)
   const characterColors: Record<number, string> = {}
@@ -1220,7 +1222,7 @@ export function MonsterSpawnPage() {
       detail: `${wave.observational ? "Ванильная волна (наблюдение)" : "Волна контроллера"}\nПричина: ${String(wave.spawn_reason ?? "—")}\nСущества: ${counts}${wave.outcome ? `\nИсход: ${wave.outcome}` : ""}` }
   }).filter((marker) => Number.isFinite(marker.x) && Number.isFinite(marker.y))
   const plannedMarkers: WorldMarker[] = [
-    ...draft.plans.filter((plan) => plan.status === "planned").map((plan) => ({ id: `planned:${plan.id}`, x: plan.x, y: plan.y, label: plan.wave_name || plan.name, color: "#59D6C2", pulse: true, detail: `Запланирована вручную\n${plan.monsters.map((monster) => `${monster.species} ×${monster.count}`).join(", ") || "Состав пока не задан"}` })),
+    ...draft.plans.filter((plan) => plan.status === "planned" && plan.source !== "manual_immediate" && Number.isFinite(plan.x) && Number.isFinite(plan.y)).map((plan) => ({ id: `planned:${plan.id}`, x: plan.x, y: plan.y, label: plan.wave_name || plan.name, color: "#59D6C2", pulse: true, detail: `Запланирована вручную\n${plan.monsters.map((monster) => `${monster.species} ×${monster.count}`).join(", ") || "Состав пока не задан"}` })),
     ...pendingWaveDetails.filter((wave) => wave.x != null && wave.y != null && Number.isFinite(Number(wave.x)) && Number.isFinite(Number(wave.y))).map((wave, index) => ({ id: `pending:${index}`, x: Number(wave.x), y: Number(wave.y), label: wave.wave_name ?? "Ожидаемая волна", color: "#F6C453", pulse: true, detail: `Ожидает спавна\n${wave.wave_name ?? "Волна"}` })),
   ]
   const roundMapMarkers = [...waveMarkers, ...plannedMarkers]
@@ -1365,6 +1367,7 @@ export function MonsterSpawnPage() {
   })
 
   return <div className="flex min-h-[calc(100vh-6rem)] flex-col gap-4">
+    {spawnNowOpen && <SpawnNowDialog key={server} server={server} state={state.data ?? draft} creatures={creatures} onClose={() => setSpawnNowOpen(false)} onQueued={() => { queryClient.invalidateQueries({ queryKey: ["monster-spawn", server] }) }} />}
     <section className="relative isolate overflow-hidden rounded-2xl border bg-gradient-to-br from-primary/[0.09] via-card to-card p-4 shadow-sm sm:p-6">
       <div aria-hidden="true" className="pointer-events-none absolute -right-12 -top-24 -z-10 size-72 rounded-full bg-primary/[0.08] blur-3xl" />
       <div className="flex flex-wrap items-center justify-between gap-5">
@@ -1378,6 +1381,7 @@ export function MonsterSpawnPage() {
         </div>
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
           <Select value={server} onValueChange={setServer}><SelectTrigger className="min-w-32 flex-1 bg-background/80 sm:flex-none"><SelectValue /></SelectTrigger><SelectContent>{["ASPER1", "ASPER2"].map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
+          <Button variant="outline" className="flex-1 sm:flex-none" disabled={dirty || !dashboard.round_active || !canDo(admin, "monster_spawn", "edit")} onClick={() => setSpawnNowOpen(true)}><Zap className="size-4" />Спавнить сейчас</Button>
           <Button variant="outline" className="flex-1 sm:flex-none" disabled={resetAdaptations.isPending} onClick={() => { setResetCountdown(10); setResetDialogOpen(true) }}><Trash2 className="size-4" />Сбросить адаптации</Button>
           <Button className="flex-1 sm:flex-none" disabled={!dirty || save.isPending} onClick={() => save.mutate()}><Save className="size-4" /> {save.isPending ? "Сохранение…" : "Сохранить"}</Button>
         </div>
@@ -1453,7 +1457,7 @@ export function MonsterSpawnPage() {
         <ExpressTuning global={global} vanilla={vanilla} setGlobal={setGlobal} setVanilla={setVanilla} />
         <SpeciesHpCard creatures={creatures} baseline={speciesBaseline} overrides={speciesHpOverrides} baseOverrides={speciesBaseHpOverrides} setBaseHp={setSpeciesBaseHp} minMult={Number(global.min_monster_health_multiplier ?? 0)} minFixed={Number(global.min_monster_health_fixed ?? 0)} setSpeciesHp={setSpeciesHp} setMinMult={(value) => setGlobal("min_monster_health_multiplier", value)} setMinFixed={(value) => setGlobal("min_monster_health_fixed", value)} />
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]"><Card className="overflow-hidden py-0"><CardHeader className="border-b px-4 py-3"><CardTitle className="text-sm">Адаптация ванильных событий</CardTitle><CardDescription className="text-xs">Насколько история эффективности влияет на здоровье и количество монстров.</CardDescription></CardHeader><CardContent className="grid gap-3 p-4 sm:grid-cols-2"><SliderField label="Влияние памяти на HP" value={Number(vanilla.adaptive_influence ?? 1)} min={0} max={1} step={0.05} onChange={(value) => setVanilla("adaptive_influence", value)} /><SliderField label="Влияние памяти на количество" value={Number(vanilla.adaptive_amount_influence ?? 0)} min={0} max={1} step={0.05} onChange={(value) => setVanilla("adaptive_amount_influence", value)} /></CardContent></Card>
-          <div className="space-y-4"><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Режим vanilla pipeline</CardTitle><CardDescription className="text-xs">{vanilla.mode === "learned_controller" ? "Ванильный спавн заблокирован; контроллер сам спавнит изученные волны и учитывает их в статистике." : "События выбирает игра, фактический спавн контролирует режим."}</CardDescription></CardHeader><CardContent className="space-y-3"><Select value={String(vanilla.mode ?? "controller")} onValueChange={(value) => setVanilla("mode", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="controller">controller · анализ и корреляция</SelectItem><SelectItem value="learned_controller">чекер · самостоятельный спавн изученных волн</SelectItem><SelectItem value="learning">обучение · только наблюдение</SelectItem><SelectItem value="native">native · штатный спавн</SelectItem><SelectItem value="disabled">disabled · заблокировать</SelectItem></SelectContent></Select><div className="rounded-lg bg-muted/30 p-3 text-xs text-muted-foreground"><div className="mb-1 flex items-center gap-2 text-foreground"><Info className="size-3.5 text-info" /> Безопасный принцип</div>Анализатор не меняет параметры сам. Все предложения остаются на этой странице до ручного подтверждения оператором.</div></CardContent></Card><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Предохранители</CardTitle></CardHeader><CardContent className="space-y-3"><div className="flex items-center justify-between gap-3 text-xs"><span>Intensity gate</span><Switch checked={global.intensity_gate_enabled !== false} onCheckedChange={(value) => setGlobal("intensity_gate_enabled", value)} /></div><div className="flex items-center justify-between gap-3 text-xs"><span>Adaptive-memory</span><Switch checked={global.adaptive_memory_enabled !== false} onCheckedChange={(value) => setGlobal("adaptive_memory_enabled", value)} /></div><div className="flex items-center justify-between gap-3 text-xs"><span>Уважать server monster settings</span><Switch checked={global.respect_server_monster_settings !== false} onCheckedChange={(value) => setGlobal("respect_server_monster_settings", value)} /></div><div className="flex items-center justify-between gap-3 text-xs"><span>Swarm behavior</span><Switch checked={global.use_swarm_behavior !== false} onCheckedChange={(value) => setGlobal("use_swarm_behavior", value)} /></div></CardContent></Card></div></div>
+          <div className="space-y-4"><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Режим спавна</CardTitle><CardDescription className="text-xs">{({ controller: "Игра выбирает события; плагин управляет их спавном, задержками и адаптацией, а также запускает настроенные волны.", learned_controller: "Плагин запускает настроенные и изученные волны. Ванильные события заблокированы, кроме событий без удержания.", learning: "Игра спавнит монстров; плагин наблюдает и изучает волны, не меняя их HP и состав.", native: "Игра спавнит монстров; плагин собирает телеметрию без изменения HP и собственного автоматического спавна.", disabled: "Автоматический спавн игры и плагина заблокирован. Ручные команды доступны." } as Record<string, string>)[String(vanilla.mode ?? "controller")]}</CardDescription></CardHeader><CardContent className="space-y-3"><Select value={String(vanilla.mode ?? "controller")} onValueChange={(value) => setVanilla("mode", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="controller">Контроллер · спавн по ванильным событиям</SelectItem><SelectItem value="learned_controller">Контроллер изученных волн · собственный спавн</SelectItem><SelectItem value="learning">Обучение · ванильный спавн и сбор данных</SelectItem><SelectItem value="native">Ванильный · без автоматического спавна плагина</SelectItem><SelectItem value="disabled">Отключён · автоматический спавн запрещён</SelectItem></SelectContent></Select><div className="rounded-lg bg-muted/30 p-3 text-xs text-muted-foreground"><div className="mb-1 flex items-center gap-2 text-foreground"><Info className="size-3.5 text-info" /> Безопасный принцип</div>Изменения постоянных настроек подтверждает оператор. Управление LLM в текущем раунде включается отдельным переключателем и ограничено предохранителями.</div></CardContent></Card><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Предохранители</CardTitle></CardHeader><CardContent className="space-y-3"><div className="flex items-center justify-between gap-3 text-xs"><span>Intensity gate</span><Switch checked={global.intensity_gate_enabled !== false} onCheckedChange={(value) => setGlobal("intensity_gate_enabled", value)} /></div><div className="flex items-center justify-between gap-3 text-xs"><span>Adaptive-memory</span><Switch checked={global.adaptive_memory_enabled !== false} onCheckedChange={(value) => setGlobal("adaptive_memory_enabled", value)} /></div><div className="flex items-center justify-between gap-3 text-xs"><span>Уважать server monster settings</span><Switch checked={global.respect_server_monster_settings !== false} onCheckedChange={(value) => setGlobal("respect_server_monster_settings", value)} /></div><div className="flex items-center justify-between gap-3 text-xs"><span>Swarm behavior</span><Switch checked={global.use_swarm_behavior !== false} onCheckedChange={(value) => setGlobal("use_swarm_behavior", value)} /></div></CardContent></Card></div></div>
         <Card><CardHeader className="pb-3"><CardTitle className="text-sm">Как читать регуляторы</CardTitle></CardHeader><CardContent className="grid gap-3 text-xs text-muted-foreground md:grid-cols-3"><div><b className="text-foreground">Amount</b><br />Масштабирует ванильное количество. Значение 1.0 сохраняет исходное поведение.</div><div><b className="text-foreground">Difficulty</b><br />Масштабирует HP и difficulty наблюдаемой волны, не меняя vanilla event selection.</div><div><b className="text-foreground">Adaptive</b><br />Подмешивает накопленную эффективность экипажей и кораблей в будущие vanilla события.</div></CardContent></Card>
       </TabsContent>
 
@@ -1472,7 +1476,7 @@ export function MonsterSpawnPage() {
         </div>
         <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="flex items-center gap-2 text-sm"><Ban className="size-4 text-warning" /> Списки исключений</CardTitle><CardDescription className="text-xs">Совпадение по подстроке имени или типу волны (mainpath, sidepath, cave, ruin, wreck, abyss и др.)</CardDescription></CardHeader>
           <CardContent className="grid gap-3 p-4 lg:grid-cols-2">
-            <TagListEditor label="Не удерживать перед спавном" description="Совпадение по подстроке имени или типу волны (например, cave, ruin, wreck); такие волны запускаются сразу, без hold_seconds." tags={ignoreList("hold_ignore_names")} onChange={(tags) => setGlobal("hold_ignore_names", tags)} addPlaceholder="например: moloch или wreck" />
+            <TagListEditor label="Не удерживать перед спавном" description="Совпадение по подстроке имени или типу. Ванильное событие проходит без вмешательства; спавны из списка не учитываются как волны, не занимают слоты и не участвуют в адаптации." tags={ignoreList("hold_ignore_names")} onChange={(tags) => setGlobal("hold_ignore_names", tags)} addPlaceholder="например: moloch или wreck" />
              <TagListEditor label="Без схем спавна" description="Совпадение по подстроке имени или типу волны (например, cave, abyss); такие волны используют структурные точки уровня вместо схем." tags={ignoreList("spawn_scheme_ignore_names")} onChange={(tags) => setGlobal("spawn_scheme_ignore_names", tags)} addPlaceholder="например: cave или wreck" />
              <TagListEditor label="Без множителей количества и HP" description="Совпадение по подстроке имени или типу волны (например, abyss, wreck); такие волны не получают adaptive/player amount и HP множители." tags={ignoreList("multiplier_exempt_wave_names")} onChange={(tags) => setGlobal("multiplier_exempt_wave_names", tags)} addPlaceholder="например: abyss или wreck" />
           </CardContent></Card>
