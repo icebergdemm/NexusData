@@ -380,6 +380,10 @@ def _build_user_prompt(state: dict, instruction: Optional[str], known_species: L
             "control_enabled": bool(state.get("live_control_enabled")),
             "controller_mode": (((state.get("config") or {}).get("global") or {}).get("vanilla_events") or {}).get("mode"),
             "known_species": known_species[:32],
+            "spawn_catalog": [[e.get(k) for k in ("species", "base_hp", "effective_threat", "hp_override")]
+                              for e in (state.get("telemetry") or {}).get("species_baseline", [])
+                              if isinstance(e, dict) and str(e.get("species")).lower() in known_species[:32]],
+            "spawn_budget": {"max_additional_pressure": 2.5, "formula": "count * HP scale * effective_threat * max(1, base_hp/500)"},
             "telemetry": _live_telemetry_brief(state.get("telemetry") or {}),
             "live_metrics": {k: v for k, v in (state.get("live_metrics") or {}).items() if k != "active_waves"},
             "crew_rows": [[c.get(k) for k in ("id", "hp_percent", "vitality", "max_vitality", "dead", "incapacitated", "outside")]
@@ -1345,6 +1349,8 @@ def _live_metrics(world: dict, telemetry: dict, memory: dict, previous: Optional
         observed = [wave.get(k) for k in ("monsters_alive", "monsters_dead", "monsters_unknown")]
         if all(isinstance(v, int) for v in observed) and sum(observed) != wave.get("monsters_total"):
             diagnostics.append("monster_state_count_mismatch:" + str(wave.get("wave_name"))[:80])
+    if diagnostics or any(isinstance(w, dict) and _number(w.get("monsters_unknown")) > 0 for w in wave_rows):
+        spawn_ready = afk = False
     prior = previous or {}
     same_round = prior.get("round_key") == world.get("round_id") and world.get("round_id") is not None
     trend = None
