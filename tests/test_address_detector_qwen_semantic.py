@@ -534,7 +534,7 @@ def test_gateway_has_one_low_priority_detector_client():
     assert detector["priority"] == 210
     assert detector["max_queue_depth"] == 1
     assert detector["max_active_requests"] == 1
-    assert detector["max_tokens"] == 256
+    assert detector["max_tokens"] == 288
 
 
 def test_qwen_analyzer_submits_one_unified_job_with_revision_key(monkeypatch):

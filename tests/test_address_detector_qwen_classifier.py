@@ -3,6 +3,42 @@ import json
 import pytest
 
 import discord_bot.address_detector.qwen_classifier as qwen
+from services_llm_gateway import LLM_CLIENTS
+
+
+@pytest.mark.parametrize(("message_count", "expected_tokens"), [(7, 260), (8, 288)])
+def test_batch_token_budget_stays_within_gateway_limit(message_count, expected_tokens):
+    assert qwen.max_tokens_for(message_count) == expected_tokens
+    assert qwen.max_tokens_for(message_count) <= LLM_CLIENTS[qwen.CLIENT_ID]["max_tokens"]
+
+
+def test_production_message_action_vector_survives_evidence_validation():
+    messages = [
+        "Ты можешь посмотреть третий раздел?",
+        "Ты терпила",
+        "Определитесь уже",
+        "Спасибо, я придержу вам место",
+        "по моему",
+        "Он написал: «ты можешь посмотреть третий раздел?»",
+        "Фраза «ты можешь посмотреть третий раздел?» считается фамильярной?",
+        "Глянь третий раздел",
+    ]
+    raw = json.dumps({"r": [
+        {"i": 0, "c": "D", "r": "ip", "e": "Ты"},
+        {"i": 1, "c": "D", "r": "ip", "e": "Ты"},
+        {"i": 2, "c": "D", "r": "ii", "e": "Определитесь"},
+        {"i": 3, "c": "D", "r": "ip", "e": "вам"},
+        {"i": 4, "c": "C", "r": "o", "e": None},
+        {"i": 5, "c": "Q", "r": "qc", "e": None},
+        {"i": 6, "c": "M", "r": "md", "e": None},
+        {"i": 7, "c": "D", "r": "ii", "e": "Глянь"},
+    ]}, ensure_ascii=False)
+    parsed = qwen.parse_results(raw, list(range(len(messages))))
+    guarded = qwen.validate_results_evidence(parsed, {"messages": [
+        {"index": index, "text": message} for index, message in enumerate(messages)
+    ]})
+
+    assert [row["action_eligible"] for row in guarded] == [True, True, False, False, False, False, False, True]
 
 
 def test_parser_accepts_compact_evidence_records_and_normalizes_classes():
