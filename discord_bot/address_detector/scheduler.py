@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
 
 logger = logging.getLogger("NexusBot.address_detector")
 
@@ -54,13 +53,12 @@ class AddressDetectorScheduler:
                 if work:
                     channel_id = self._next_channel_id(work)
                     channel = [item for item in work if item["channel_id"] == channel_id]
-                    now = datetime.now(timezone.utc).timestamp()
-                    created = [datetime.fromisoformat(item["created_at"]).replace(tzinfo=timezone.utc).timestamp() for item in channel]
-                    newest = max(created)
-                    oldest = min(created)
+                    ages = [item["age_seconds"] for item in channel]
+                    newest_age = min(ages)
+                    oldest_age = max(ages)
                     delay = min(
-                        max(0.0, self.config.llm_idle_debounce_seconds - (now - newest)),
-                        max(0.0, self.config.llm_hard_batch_delay_seconds - (now - oldest)),
+                        max(0.0, self.config.llm_idle_debounce_seconds - newest_age),
+                        max(0.0, self.config.llm_hard_batch_delay_seconds - oldest_age),
                     )
                     if delay:
                         await self._wait(delay, wake_version)

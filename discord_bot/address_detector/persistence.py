@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import re
 from typing import Callable, Iterable
 
+from sqlalchemy import func
 from database import SessionLocal
 from models import AddressDetectorBatchAudit, AddressDetectorChannelState, AddressDetectorIncident, AddressDetectorPendingWork, AddressDetectorRevisionState, AddressDetectorSignal
 from sqlalchemy.exc import IntegrityError
@@ -255,6 +256,7 @@ class AddressDetectorStore:
     def pending_work(self, channel_id: int | None = None) -> list[dict]:
         db = self.session_factory()
         try:
+            db_now = db.query(func.now()).scalar()
             query = db.query(AddressDetectorPendingWork).filter_by(state="pending")
             if channel_id is not None:
                 query = query.filter_by(channel_id=str(channel_id))
@@ -263,7 +265,8 @@ class AddressDetectorStore:
                 "revision": int(row.revision), "author_id": int(row.author_id),
                 "content": row.content, "reply_target_id": int(row.reply_target_id) if row.reply_target_id else None,
                 "event_order": int(row.event_order), "payload": row.payload,
-                "created_at": row.created_at.replace(tzinfo=timezone.utc).isoformat(),
+                "created_at": row.created_at.isoformat(),
+                "age_seconds": max(0.0, (db_now - row.created_at).total_seconds()),
             } for row in query.order_by(AddressDetectorPendingWork.channel_id, AddressDetectorPendingWork.event_order,
                                        AddressDetectorPendingWork.revision).all()]
         finally:
