@@ -28,7 +28,7 @@ LLM_CLIENTS = {
     "monster_llm": {"backend": "dossier", "priority": 120, "quota_min": 12,
                     "timeout": 240.0, "max_tokens": 4096, "max_queue_depth": 50},
     "address_detector": {"backend": "dossier", "priority": 210, "quota_min": 6,
-                         "timeout": 25.0, "max_tokens": 256, "max_queue_depth": 1,
+                         "timeout": 25.0, "max_tokens": 288, "max_queue_depth": 1,
                          "max_active_requests": 1},
 }
 BACKENDS = {
