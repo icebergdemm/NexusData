@@ -124,8 +124,11 @@ class DetectorConfig:
 
     @property
     def scope(self) -> ScopeConfig:
+        monitored = set(self.monitored_channel_ids)
+        if self.signals_channel_id:
+            monitored.discard(int(self.signals_channel_id))
         return ScopeConfig(
-            monitored_channel_ids=set(self.monitored_channel_ids),
+            monitored_channel_ids=monitored,
             monitored_category_ids=set(self.monitored_category_ids),
             excluded_channel_ids=set(self.excluded_channel_ids),
         )
@@ -133,8 +136,11 @@ class DetectorConfig:
     def public_status(self) -> dict:
         return {
             "enabled": self.enabled,
-            "monitored_channel_count": len(self.monitored_channel_ids),
+            "monitored_channel_count": len(self.scope.monitored_channel_ids),
             "signals_channel_configured": bool(self.signals_channel_id),
+            "signals_channel_overlaps_monitored": bool(
+                self.signals_channel_id and int(self.signals_channel_id) in self.monitored_channel_ids
+            ),
             "moderator_role_configured": bool(self.moderator_role_id),
             "emoji_configured": bool(self.redadmin_emoji_id),
             "llm_enabled": self.llm_enabled,

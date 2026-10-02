@@ -42,7 +42,11 @@ class AddressDetectorScheduler:
                     asyncio.to_thread(self.store.detector_channel_states),
                     asyncio.to_thread(self.store.pending_work),
                 )
+                scope = self.config.scope
+                allowed_channels = scope.monitored_channel_ids - scope.excluded_channel_ids
                 active = [row for row in active if row["pending_batch"]]
+                active = [row for row in active if int(row["channel_id"]) in allowed_channels]
+                work = [item for item in work if int(item["channel_id"]) in allowed_channels]
                 if active:
                     channel_id = self._next_channel_id(active)
                     row = next(row for row in active if int(row["channel_id"]) == channel_id)

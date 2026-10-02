@@ -28,6 +28,7 @@ interface DetectorEffective {
   enabled: boolean
   monitored_channel_count: number
   signals_channel_configured: boolean
+  signals_channel_overlaps_monitored: boolean
   moderator_role_configured: boolean
   emoji_configured: boolean
   llm_enabled?: boolean
@@ -360,20 +361,24 @@ export function AddressDetectorTab({ data, onSave }: Props) {
   const warning = [...(detector?.runtime.events ?? [])].reverse().find((entry) =>
     entry.event === "startup_validation_warning" || entry.event === "model_degraded",
   )
+  const scopeWarning = effective?.signals_channel_overlaps_monitored
+    ? "Канал сигналов входит в whitelist, но исключён из мониторинга. Уберите его из разрешённых каналов."
+    : undefined
+  const warningText = scopeWarning ?? warning?.detail
   const lastQwenEvent = [...(detector?.runtime.events ?? [])].reverse().find((entry) => entry.event.includes("qwen") || entry.event.includes("gateway") || entry.event.includes("batch"))
   const statusReason = detector?.config_error ?? diagnostic?.detail ?? (!monitoredIds.length && enabled ? "whitelist каналов пуст" : undefined)
-  const statusText = statusReason ? "Не запущен" : active && warning ? "Активен с предупреждением" : active ? "Активен" : enabled ? "Ожидает запуска" : "Выключен"
-  const statusClass = statusReason ? "border-destructive/50 bg-destructive/5" : warning ? "border-amber-500/40 bg-amber-500/5" : active ? "border-emerald-500/40 bg-emerald-500/5" : "border-border"
+  const statusText = statusReason ? "Не запущен" : active && warningText ? "Активен с предупреждением" : active ? "Активен" : enabled ? "Ожидает запуска" : "Выключен"
+  const statusClass = statusReason ? "border-destructive/50 bg-destructive/5" : warningText ? "border-amber-500/40 bg-amber-500/5" : active ? "border-emerald-500/40 bg-emerald-500/5" : "border-border"
 
   return (
     <div className="space-y-4">
       <Card className={statusClass}>
         <CardContent className="flex flex-wrap items-center justify-between gap-4 py-4">
           <div className="flex items-center gap-3">
-            {statusReason ? <CircleAlert className="size-5 text-destructive" /> : warning ? <CircleAlert className="size-5 text-amber-300" /> : active ? <CircleCheck className="size-5 text-emerald-500" /> : <Power className="size-5 text-muted-foreground" />}
+            {statusReason ? <CircleAlert className="size-5 text-destructive" /> : warningText ? <CircleAlert className="size-5 text-amber-300" /> : active ? <CircleCheck className="size-5 text-emerald-500" /> : <Power className="size-5 text-muted-foreground" />}
             <div>
               <p className="font-medium">Детектор обращений</p>
-              <p className="text-xs text-muted-foreground">{statusText}. {statusReason ?? warning?.detail ?? "Бот только сигнализирует модераторам и ничего не применяет к участнику."}</p>
+              <p className="text-xs text-muted-foreground">{statusText}. {statusReason ?? warningText ?? "Бот только сигнализирует модераторам и ничего не применяет к участнику."}</p>
             </div>
           </div>
           <div className="flex items-center gap-3">
