@@ -157,15 +157,14 @@ class AddressDetectorRuntime:
         self._count("trigger_candidates", rate=True)
         self._event("candidate_detected", f"signals={','.join(match.tokens)}")
         context = self._candidate_context(message, match)
-        await self.service.add_marker(message)
         accepted = await asyncio.to_thread(self.store.upsert_candidate, context, match.tokens)
         if not accepted:
             self._message_revisions.pop(context.message_id, None)
-            await self.service.remove_marker(message)
             return False
-        submission = await self.service.submit(message, match, marker_added=True, revision=1, candidate_context=context)
+        submission = await self.service.submit(message, match, revision=1, candidate_context=context)
         enqueued = bool(submission)
         if enqueued:
+            self._count("qwen_candidates")
             self._count("fast_llm_requests", rate=True)
         if not enqueued:
             status = submission.reason or "queue_rejected"
@@ -190,12 +189,12 @@ class AddressDetectorRuntime:
         async with self._classification_lock:
             revision = await asyncio.to_thread(self.store.update_candidate, context, match.tokens)
             self._count("edited_candidates")
-        await self.service.add_marker(message)
         submission = await self.service.submit(
-            message, match, marker_added=True, revision=revision, candidate_context=context, is_edit=True
+            message, match, revision=revision, candidate_context=context, is_edit=True
         )
         enqueued = bool(submission)
         if enqueued:
+            self._count("qwen_candidates")
             self._count("fast_llm_requests", rate=True)
         if not enqueued:
             status = submission.reason or "queue_rejected"
@@ -242,12 +241,12 @@ class AddressDetectorRuntime:
                 revision = await asyncio.to_thread(self.store.update_candidate, context, match.tokens)
                 self._count("edited_candidates")
             self._message_revisions[message_id] = revision
-            await self.service.add_marker(message)
             submission = await self.service.submit(
-                message, match, marker_added=True, revision=revision, candidate_context=context,
+                message, match, revision=revision, candidate_context=context,
             )
             if submission:
                 self._count("recovered_candidates")
+                self._count("qwen_candidates")
                 self._count("fast_llm_requests", rate=True)
             else:
                 status = submission.reason or "queue_rejected"
@@ -310,6 +309,15 @@ class AddressDetectorRuntime:
                 Verdict.LIKELY_VIOLATION: "analysis_likely",
             }[result.verdict]
             self._count(counter)
+            if result.verdict is Verdict.LIKELY_VIOLATION:
+                self._count("qwen_direct")
+                await self.service.add_marker(job.message)
+            elif result.verdict is Verdict.CLEAN:
+                self._count("qwen_clean")
+                if getattr(job, "is_edit", False):
+                    await self.service.remove_marker(job.message)
+            elif result.classification == "ambiguous":
+                self._count("qwen_ambiguous")
             if result.classification:
                 self._count(f"classification_{result.classification}")
             if result.queue_wait_ms is not None:
@@ -319,7 +327,7 @@ class AddressDetectorRuntime:
             if result.total_ms is not None:
                 self._observe("fast_total_latency_ms", result.total_ms)
             self._event(counter, f"classifier=qwen reason_code={result.reason_code or '-'}")
-            if result.verdict is not Verdict.CLEAN and self.on_signal:
+            if result.verdict is Verdict.LIKELY_VIOLATION and self.on_signal:
                 callback_result = self.on_signal(context, result, record)
                 if inspect.isawaitable(callback_result):
                     await callback_result
@@ -480,7 +488,6 @@ class AddressDetectorRuntime:
         match = find_triggers(item["content"])
         base = self._candidate_context(message, match)
         context = await self.context_analyzer.collector.collect(message, match, base)
-        await self.service.add_marker(message)
         signal = await asyncio.to_thread(self.store.get_signal, message_id)
         if signal is None:
             accepted = await asyncio.to_thread(self.store.upsert_candidate, context, match.tokens)
@@ -533,6 +540,8 @@ class AddressDetectorRuntime:
     def _event(self, name: str, detail: str | None = None) -> None:
         if name == "queue_overflow":
             self._count("candidate_queue_overflow")
+        elif name == "reaction_added":
+            self._count("reactions_after_verdict")
         self.event_counts[name] += 1
         count = self.event_counts[name]
         level = "error" if ("error" in name or "overflow" in name or "failed" in name) else "warning" if "timeout" in name or "warning" in name else "info"

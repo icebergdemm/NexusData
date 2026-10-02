@@ -89,16 +89,14 @@ class AddressDetectorService:
         self._workers = []
 
     async def submit(
-        self, message: object, match: TriggerMatch | None = None, *, marker_added: bool = False,
-        revision: int = 1, candidate_context: AddressContext | None = None,
+        self, message: object, match: TriggerMatch | None = None, *, revision: int = 1,
+        candidate_context: AddressContext | None = None,
         is_edit: bool = False,
     ) -> SubmitResult:
-        """Add the marker first, then enqueue. False means the queue rejected it."""
+        """Enqueue a candidate without taking a moderator action."""
 
         if self._stopping:
             return SubmitResult(False, "stopping")
-        if not marker_added:
-            await self.add_marker(message)
 
         try:
             self.queue.put_nowait(DetectorJob(message, match, revision, candidate_context, is_edit=is_edit))
@@ -141,9 +139,7 @@ class AddressDetectorService:
                     continue
                 if result.operational_failure:
                     continue
-                if result.verdict is Verdict.CLEAN:
-                    await self._remove_reaction(job.message)
-                else:
+                if result.verdict is Verdict.LIKELY_VIOLATION:
                     callback_result = self.on_signal(job.message, result)
                     if inspect.isawaitable(callback_result):
                         await callback_result

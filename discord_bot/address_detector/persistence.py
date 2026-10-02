@@ -256,7 +256,7 @@ class AddressDetectorStore:
             }
             revisions[str(revision)] = entry
             signal.context_snapshot = {**snapshot, "revisions": revisions}
-            if result.verdict is Verdict.CLEAN:
+            if result.verdict is not Verdict.LIKELY_VIOLATION:
                 db.commit()
                 return AnalysisRecord(None, False, 0)
 
