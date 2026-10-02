@@ -103,6 +103,23 @@ def _address_detector_startup_event(event: str, detail: str | None = None) -> No
     logger.info("address_detector startup_event=%s detail=%s", event, detail or "-")
 
 
+async def _resolve_address_detector_message(channel_id: int, message_id: int):
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except discord.NotFound:
+            return None
+        except (discord.Forbidden, discord.HTTPException):
+            raise
+    try:
+        return await channel.fetch_message(message_id)
+    except discord.NotFound:
+        return None
+    except (discord.Forbidden, discord.HTTPException):
+        raise
+
+
 async def _configure_address_detector(db_config: dict | None = None) -> None:
     """Load, validate and start the detector without affecting bot startup."""
 
@@ -112,19 +129,34 @@ async def _configure_address_detector(db_config: dict | None = None) -> None:
         await _address_detector_runtime.stop()
         _address_detector_runtime = None
 
-    from discord_bot.address_detector.analyzer import HybridAnalyzer, RuleAnalyzer
+    from discord_bot.address_detector.qwen_classifier import QwenSemanticAnalyzer
     from discord_bot.address_detector.config import load_detector_config
     from discord_bot.address_detector.notifier import DiscordNotifier, DiscordReactionPort
-    from discord_bot.address_detector.onnx_analyzer import load_optional_onnx
     from discord_bot.address_detector.persistence import AddressDetectorStore
     from discord_bot.address_detector.runtime import AddressDetectorRuntime
 
     try:
         detector_config = load_detector_config(settings, db_config or {})
     except ValueError as exc:
+        from services_llm_gateway import active_legacy_detector_tickets, cancel as cancel_llm_ticket
+
+        for ticket in await asyncio.to_thread(active_legacy_detector_tickets):
+            await asyncio.to_thread(cancel_llm_ticket, ticket["ticket_id"])
         logger.error("address_detector invalid_config error=%s", exc)
         _address_detector_startup_event("startup_validation_error", str(exc))
         return
+
+    store = AddressDetectorStore()
+    runtime = AddressDetectorRuntime(
+        detector_config,
+        DiscordReactionPort(bot, detector_config),
+        analyzer=QwenSemanticAnalyzer(detector_config),
+        store=store,
+        resolve_message=_resolve_address_detector_message,
+    )
+    await runtime._reconcile_legacy_tickets(
+        requeue=bool(detector_config.enabled and detector_config.llm_enabled and detector_config.monitored_channel_ids),
+    )
     if not detector_config.enabled:
         logger.info("address_detector disabled")
         _address_detector_startup_event("detector_disabled", "переключатель выключен")
@@ -134,7 +166,6 @@ async def _configure_address_detector(db_config: dict | None = None) -> None:
         _address_detector_startup_event("detector_disabled", "whitelist каналов пуст")
         return
 
-    store = AddressDetectorStore()
     notifier = DiscordNotifier(bot, detector_config, store)
     ready, validation_errors = await notifier.validate()
     for error in validation_errors:
@@ -147,46 +178,20 @@ async def _configure_address_detector(db_config: dict | None = None) -> None:
         _address_detector_startup_event("detector_disabled", "startup validation failed")
         return
 
-    model_error_kind: list[str] = []
-    onnx_model = await asyncio.to_thread(
-        load_optional_onnx,
-        detector_config.onnx_model_path,
-        detector_config.onnx_tokenizer_path,
-        error_kind=model_error_kind,
-    ) if detector_config.analyzer_mode == "hybrid" else None
-    if detector_config.analyzer_mode == "hybrid":
-        if onnx_model is None:
-            detail = "rules-only degraded mode: ONNX model unavailable"
-            if model_error_kind:
-                detail += f" ({model_error_kind[0]})"
-            logger.warning("address_detector %s", detail)
-            _address_detector_startup_event("model_degraded", detail)
-        else:
-            detail = f"classifier={onnx_model.model_version} entailment_index={onnx_model.entailment_index}"
-            logger.info("address_detector model_loaded %s", detail)
-            _address_detector_startup_event("model_loaded", detail)
-    runtime = AddressDetectorRuntime(
-        detector_config,
-        DiscordReactionPort(bot, detector_config),
-        analyzer=HybridAnalyzer(
-            RuleAnalyzer(),
-            onnx_model,
-            likely_threshold=detector_config.likely_threshold,
-            clean_threshold=detector_config.clean_threshold,
-        ),
-        store=store,
-        on_signal=notifier.send_signal,
-        on_edit_clean=notifier.mark_edit_clean,
-        on_delete=notifier.mark_deleted,
-    )
-    await runtime.start()
+    if not detector_config.llm_enabled:
+        logger.info("address_detector disabled: Qwen classifier is not enabled")
+        _address_detector_startup_event("detector_disabled", "Qwen classifier is disabled")
+        return
+    runtime.on_signal = notifier.send_signal
+    runtime.on_edit_clean = notifier.mark_edit_clean
+    runtime.on_delete = notifier.mark_deleted
+    await runtime.start(reconcile=False)
     _address_detector_runtime = runtime
     _address_detector_startup_event("detector_started", f"channels={len(detector_config.monitored_channel_ids)}")
     logger.info(
-        "address_detector started channels=%s mode=%s workers=%s",
+        "address_detector started channels=%s mode=%s",
         len(detector_config.monitored_channel_ids),
-        detector_config.analyzer_mode,
-        detector_config.worker_count,
+        "qwen",
     )
 
 
@@ -196,11 +201,10 @@ def get_address_detector_status() -> dict:
         return {"active": False, "queue_depth": 0, "events": list(_address_detector_startup_events)}
     runtime_status = runtime.status()
     return {
+        **runtime_status,
         "active": True,
-        "queue_depth": runtime.service.queue.qsize(),
-        "queue_capacity": runtime.service.queue.maxsize,
+        "queue_depth": runtime_status.get("queue_depth", 0),
         "events": [*_address_detector_startup_events, *runtime_status.get("events", [])],
-        "counters": runtime_status.get("counters", {}),
     }
 
 

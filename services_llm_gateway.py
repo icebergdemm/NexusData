@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import or_, update
@@ -27,6 +27,9 @@ LLM_CLIENTS = {
                               "timeout": 240.0, "max_tokens": 2048, "max_queue_depth": 20},
     "monster_llm": {"backend": "dossier", "priority": 120, "quota_min": 12,
                     "timeout": 240.0, "max_tokens": 4096, "max_queue_depth": 50},
+    "address_detector": {"backend": "dossier", "priority": 210, "quota_min": 6,
+                         "timeout": 25.0, "max_tokens": 288, "max_queue_depth": 1,
+                         "max_active_requests": 1},
 }
 BACKENDS = {
     "dossier": {"url_key": "ai_dossier_url", "key": "ai_dossier_api_key",
@@ -45,14 +48,25 @@ class LLMGatewayError(Exception):
         self.status_code = status_code
 
 
-def _database_local_now() -> datetime:
-    """Return naive local time matching the database DateTime convention."""
-    return datetime.now()
+def _utc_now() -> datetime:
+    """MySQL DATETIME is naive; all gateway values stored in it are UTC."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def set_wake_callback(callback) -> None:
     global _wake
     _wake = callback
+
+
+def configure_client(client_id: str, *, quota_min: int, max_queue_depth: int) -> None:
+    """Apply the address detector's runtime limits without changing other clients."""
+    client = LLM_CLIENTS.get(client_id)
+    if client is None:
+        raise LLMGatewayError("Unknown LLM client")
+    if not 1 <= quota_min <= 60 or not 1 <= max_queue_depth <= 100:
+        raise LLMGatewayError("Invalid LLM client limits")
+    client["quota_min"] = quota_min
+    client["max_queue_depth"] = max_queue_depth
 
 
 def _request_hash(client_id: str, messages: Any, params: dict) -> str:
@@ -89,20 +103,29 @@ def _validate(client_id: str, messages: Any, params: dict) -> tuple[dict, dict]:
 
 
 def submit(client_id, messages, params, priority=None, idempotency_key=None,
-           timeout=None, requested_by=None) -> int:
+           timeout=None, requested_by=None, application_metadata=None) -> int:
     client, payload = _validate(client_id, messages, params)
+    if application_metadata is not None and not isinstance(application_metadata, dict):
+        raise LLMGatewayError("application metadata must be an object")
     key = (idempotency_key or _request_hash(client_id, messages, payload))[:128]
     db = SessionLocal()
     try:
         existing = db.query(AILlmRequest).filter(AILlmRequest.idempotency_key == key).first()
         if existing:
             return existing.id
+        max_active = int(client.get("max_active_requests", 0) or 0)
+        if max_active and db.query(AILlmRequest).filter(
+            AILlmRequest.client_id == client_id,
+            AILlmRequest.status.in_(("queued", "running")),
+        ).count() >= max_active:
+            raise LLMGatewayError("LLM client already has an active request", 429)
         depth = db.query(AILlmRequest).filter(
             AILlmRequest.client_id == client_id, AILlmRequest.status == "queued"
         ).count()
         if depth >= client["max_queue_depth"]:
             raise LLMGatewayError("LLM client queue is full", 429)
-        minute_ago = _database_local_now() - timedelta(minutes=1)
+        now = _utc_now()
+        minute_ago = now - timedelta(minutes=1)
         recent = db.query(AILlmRequest).filter(
             AILlmRequest.client_id == client_id,
             AILlmRequest.created_at >= minute_ago,
@@ -113,8 +136,12 @@ def submit(client_id, messages, params, priority=None, idempotency_key=None,
         row = AILlmRequest(
             client_id=client_id, backend=client["backend"],
             priority=int(priority if priority is not None else client["priority"]),
-            request_json={"payload": payload, "timeout": float(timeout or client["timeout"])},
-            idempotency_key=key, requested_by=requested_by,
+            request_json={
+                "payload": payload,
+                "timeout": float(timeout or client["timeout"]),
+                **({"app_metadata": application_metadata} if application_metadata is not None else {}),
+            },
+            idempotency_key=key, requested_by=requested_by, created_at=now,
         )
         db.add(row)
         db.commit()
@@ -142,8 +169,22 @@ def poll(ticket_id: int) -> dict:
         row = db.query(AILlmRequest).filter(AILlmRequest.id == ticket_id).first()
         if not row:
             raise LLMGatewayError("Unknown LLM ticket", 404)
+        now = _utc_now()
+        queue_end = row.started_at or now
+        backend_end = row.finished_at or now
+        queue_wait_ms = max(0, int((queue_end - row.created_at).total_seconds() * 1000))
+        backend_ms = (
+            max(0, int((backend_end - row.started_at).total_seconds() * 1000))
+            if row.started_at else None
+        )
+        request_age_ms = max(0, int((now - row.created_at).total_seconds() * 1000))
         return {"ticket_id": row.id, "client_id": row.client_id, "status": row.status,
-                "result": row.result_ref, "error": row.error, "attempts": row.attempts}
+                "result": row.result_ref, "error": row.error, "attempts": row.attempts,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "started_at": row.started_at.isoformat() if row.started_at else None,
+                "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+                "queue_wait_ms": queue_wait_ms, "backend_ms": backend_ms,
+                "request_age_ms": request_age_ms}
     finally:
         db.close()
 
@@ -157,7 +198,7 @@ def cancel(ticket_id: int) -> bool:
         result = db.execute(update(AILlmRequest).where(
             AILlmRequest.id == ticket_id,
             AILlmRequest.status.in_(("queued", "running")),
-        ).values(status="cancelled", finished_at=datetime.utcnow(), lease_expires_at=None))
+        ).values(status="cancelled", finished_at=_utc_now(), lease_expires_at=None))
         if not result.rowcount:
             db.rollback()
             return False
@@ -172,10 +213,37 @@ def cancel(ticket_id: int) -> bool:
         db.close()
 
 
+def find_ticket(client_id: str, idempotency_key: str) -> int | None:
+    """Find a durable request so detector recovery can reattach without resubmitting."""
+    db = SessionLocal()
+    try:
+        row = db.query(AILlmRequest.id).filter(
+            AILlmRequest.client_id == client_id,
+            AILlmRequest.idempotency_key == idempotency_key,
+        ).one_or_none()
+        return int(row[0]) if row else None
+    finally:
+        db.close()
+
+
+def active_legacy_detector_tickets() -> list[dict]:
+    """Return old detector requests for the startup one-time reconciliation."""
+    db = SessionLocal()
+    try:
+        rows = db.query(AILlmRequest).filter(
+            AILlmRequest.client_id.in_(("address_detector_fast", "address_detector_background")),
+            AILlmRequest.status.in_(("queued", "running")),
+        ).all()
+        return [{"ticket_id": int(row.id), "client_id": row.client_id,
+                 "idempotency_key": row.idempotency_key, "status": row.status} for row in rows]
+    finally:
+        db.close()
+
+
 def claim_next(last_client: str | None = None) -> AILlmRequest | None:
     db = SessionLocal()
     try:
-        now = datetime.utcnow()
+        now = _utc_now()
         db.query(AILlmRequest).filter(
             AILlmRequest.status == "running", AILlmRequest.lease_expires_at < now
         ).update({"status": "queued", "lease_expires_at": None}, synchronize_session=False)
@@ -223,7 +291,7 @@ def finish(ticket_id: int, status: str, result=None, error=None) -> bool:
                 AILlmRequest.status != "cancelled",
             ).values(status=status, result_ref=bounded,
                      error=str(error)[:2000] if error else None,
-                     finished_at=datetime.utcnow(), lease_expires_at=None))
+                     finished_at=_utc_now(), lease_expires_at=None))
             db.commit()
             return bool(result.rowcount)
         return False
@@ -274,7 +342,7 @@ def purge_client(client_id) -> int:
     try:
         count = db.query(AILlmRequest).filter(AILlmRequest.client_id == client_id,
                                               AILlmRequest.status == "queued").update(
-                                                  {"status": "cancelled", "finished_at": datetime.utcnow()})
+                                                  {"status": "cancelled", "finished_at": _utc_now()})
         db.commit(); return count
     finally: db.close()
 
@@ -286,7 +354,7 @@ def cancel_queued(client_id=None) -> int:
         query = db.query(AILlmRequest).filter(AILlmRequest.status == "queued")
         if client_id:
             query = query.filter(AILlmRequest.client_id == client_id)
-        count = query.update({"status": "cancelled", "finished_at": datetime.utcnow()},
+        count = query.update({"status": "cancelled", "finished_at": _utc_now()},
                              synchronize_session=False)
         db.commit()
         return count

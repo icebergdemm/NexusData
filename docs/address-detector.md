@@ -1,88 +1,46 @@
-# Detector for informal second-person address
+# Address Detector
 
-The detector is disabled by default and monitors only the explicit
-`MONITORED_CHANNEL_IDS` whitelist. Category IDs never add channels by
-themselves. The feature does not send messages to the author, delete content,
-or apply moderation actions.
+Address Detector classifies every message inside the configured Discord scope with Qwen. Lexical patterns do not gate coverage: quotes, code, meta discussion, imperatives, and messages without «ты» still reach the classifier. The detector never applies sanctions.
 
-## Configuration
+## Scheduling
 
-Set defaults in `.env` or use the third tab of `/admin/discord-bot` with the
-`discord_bot.manage_config` permission. Database values override `.env`:
+One scheduler drains durable per-message revisions in Discord message order and selects non-empty channels round-robin. Defaults are 0.5 seconds idle debounce, 2 seconds maximum batch delay, 8 new messages per batch, and 24 total payload messages. Selection keeps every new message first, then its distinct reply targets, then the newest ordinary history. At most one `address_detector` gateway request can be queued or running; the remaining backlog stays in detector pending-work storage.
 
-- `MODERATION_ADDRESS_DETECTOR_ENABLED`
-- `MODERATION_SIGNALS_CHANNEL_ID`
-- `MODERATOR_ROLE_ID`
-- `REDADMIN_EMOJI_ID`
-- `MONITORED_CHANNEL_IDS`
-- `EXCLUDED_CHANNEL_IDS`
-- `ADDRESS_CONTEXT_MESSAGES`
-- `ADDRESS_INCIDENT_WINDOW_SECONDS`
-- `ADDRESS_ANALYZER_MODE=rules|hybrid`
-- `ADDRESS_LIKELY_THRESHOLD`
-- `ADDRESS_CLEAN_THRESHOLD`
-- `ADDRESS_ANALYSIS_TIMEOUT_SECONDS`
-- `ONNX_MODEL_PATH`
-- `ONNX_TOKENIZER_PATH`
+Each active batch is persisted before gateway submission and moves through `prepared`, `submitted`, `terminal_received`, `applied`, then cleared. Its identity is a stable digest of the conversation scope and the ordered `(message_id, revision)` list. On restart the detector reattaches to the existing gateway ticket and uses the saved batch composition. A batch gets at most one retry, and only after a terminal backend failure or invalid model response. Polling/recovery errors keep the active batch for later reattachment.
 
-The signal target, moderator role, emoji, and monitored channels are validated
-when the Discord bot becomes ready. An unavailable signal target disables the
-detector. An unavailable emoji degrades the reaction marker but does not drop
-the candidate.
+## Classification
 
-## Optional local model
+Each requested index must appear exactly once in the compact strict JSON response:
 
-The default candidate is
-[`MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli`](https://huggingface.co/MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli/tree/main/onnx).
-It is an external MIT-licensed artifact and is not stored in Git. Install the
-three files into `/home/container/models/address-detector` on the NexusData
-runtime host (or use another directory and point the two environment settings
-at it):
-
-```sh
-set -eu
-model_dir=/home/container/models/address-detector
-mkdir -p "$model_dir"
-curl -fL --retry 3 -o "$model_dir/model.onnx" \
-  'https://huggingface.co/MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli/resolve/main/onnx/model.onnx?download=true'
-curl -fL --retry 3 -o "$model_dir/tokenizer.json" \
-  'https://huggingface.co/MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli/resolve/main/onnx/tokenizer.json?download=true'
-curl -fL --retry 3 -o "$model_dir/config.json" \
-  'https://huggingface.co/MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli/resolve/main/config.json?download=true'
-sha256sum "$model_dir/model.onnx" "$model_dir/tokenizer.json" "$model_dir/config.json"
+```json
+{"direct":[{"i":7,"r":"informal_imperative"}],"ambiguous":[],"quote":[2],"meta":[],"clean":[5]}
 ```
 
-The checksum output is the installation record; keep it with the server
-deployment notes. `config.json` is required because the NLI adapter reads the
-`id2label` mapping instead of assuming a particular logits order. The bot
-never downloads the model at startup.
+`direct` and `ambiguous` items include an allowed reason code. `quote`, `meta`, and `clean` contain indexes only. The parser rejects missing, duplicate, extra, or malformed indexes and invalid reasons. Output tokens scale with batch size: `32 + 24 × new_message_count` (224 at the maximum of 8).
 
-If the model or tokenizer is absent, `hybrid` stays in rules-only degraded mode:
-obvious rules still classify, while unresolved candidates become `UNCERTAIN`
-and are sent to moderators.
+- `direct_familiar_address` creates or aggregates a moderator signal and adds the configured marker.
+- `ambiguous` is retained for moderator review without an automatic public action.
+- `no_violation`, `quoted_or_reported`, and `example_or_metadiscussion` create no moderator signal.
+- Exhausted operational failure is terminal, creates no public action, and does not block later revisions.
 
-## Rollout
+## Persistence and upgrade
 
-1. Install the pinned Python dependencies from `requirements.txt`.
-2. Place the model outside the repository and verify CPU load/latency on the
-   target server:
+Scoped input is stored in `discord_address_detector_pending_work`, separate from moderator-facing `AddressDetectorSignal` rows. A compact `AddressDetectorRevisionState` row per message preserves the revision fence after terminal queue rows are pruned. These revision rows are retained indefinitely so edits to old Discord messages remain visible; storage therefore grows with the number of distinct scoped messages. `AddressDetectorChannelState` stores the watermark and active batch. One `AddressDetectorBatchAudit` row per batch retains ticket, index-to-message/revision mapping, normalized results, reasons, and actions for 30 days. Direct-signal action intents are persisted before delivery and carry a stable embed marker so restart recovery can find an already-sent moderator message. SQLAlchemy `Base.metadata.create_all` creates the additive tables idempotently during normal startup; older versions ignore them.
 
-   ```sh
-   python -m scripts.address_detector_benchmark
-   ```
+Startup cancels active requests from the retired `address_detector_fast` and `address_detector_background` gateway clients even when unified processing is disabled. It requeues a recoverable current revision only when the unified detector is enabled. A completed legacy ticket is left alone to avoid duplicating an action.
 
-   The command reports cold load time, warm p50/p95 latency and the result of
-   a small Russian smoke set. It does not send Discord messages.
-3. Configure a test Discord channel, signal channel/thread, moderator role,
-   and emoji in the third admin tab.
-4. Start with `ADDRESS_ANALYZER_MODE=rules`; manually check reaction lifecycle,
-   edit/delete handling, and incident aggregation.
-5. Set `ONNX_MODEL_PATH` and `ONNX_TOKENIZER_PATH` to the installed files, then
-   set `ADDRESS_ANALYZER_MODE=hybrid` only after the CPU benchmark and manual
-   examples are acceptable. The UI journal reports `model_loaded` or the
-   rules-only degraded reason after restart.
-6. Deploy through the normal NexusData flow with `update restart`.
+The shared gateway priorities are dispatcher 10, dossier 100, monster 120, log analysis 150, future 200, and address detector 210. The detector therefore yields to existing AI work. Other client policies are unchanged.
 
-There is no automatic punishment path in this feature. The footer in every
-signal is intentionally explicit: it is an administrative signal, not a
-sanction.
+| Setting | Default |
+| --- | ---: |
+| `ADDRESS_LLM_ENABLED` | `false` |
+| `ADDRESS_LLM_IDLE_DEBOUNCE_SECONDS` | `0.5` |
+| `ADDRESS_LLM_HARD_BATCH_DELAY_SECONDS` | `2.0` |
+| `ADDRESS_LLM_MAX_NEW_MESSAGES` | `8` |
+| `ADDRESS_LLM_MAX_PAYLOAD_MESSAGES` | `24` |
+| `ADDRESS_LLM_QUOTA_MIN` | `6` |
+| `ADDRESS_LLM_QUEUE_WAIT_TIMEOUT_SECONDS` | `60` |
+| `ADDRESS_LLM_BACKEND_TIMEOUT_SECONDS` | `25` |
+| `ADDRESS_LLM_MAX_REQUEST_AGE_SECONDS` | `120` |
+
+Runtime counters and latency summaries reset on restart. Pending revisions, active batches, gateway tickets, batch audit, and watermark are durable.

@@ -52,10 +52,10 @@ interface DiscordBotResponse {
       signals_channel_id: string
       moderator_role_id: string
       signals_channel_configured: boolean
+      signals_channel_overlaps_monitored: boolean
       moderator_role_configured: boolean
       emoji_configured: boolean
       analyzer_mode: string
-      model_configured: boolean
     } | null
     config_error: string | null
     runtime: {

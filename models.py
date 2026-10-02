@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, JSON, DateTime, func, Float, Boolean, Index, UniqueConstraint, Text
+from sqlalchemy import Column, Integer, String, ForeignKey, JSON, DateTime, func, Float, Boolean, Index, UniqueConstraint, Text, BigInteger
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -652,7 +652,7 @@ class AddressDetectorIncident(Base):
 
 
 class AddressDetectorSignal(Base):
-    """One unique Discord message processed by the address detector."""
+    """Moderator-facing result for a message requiring review."""
 
     __tablename__ = "discord_address_detector_signals"
     __table_args__ = (
@@ -680,6 +680,69 @@ class AddressDetectorSignal(Base):
     processing_status = Column(String(32), nullable=False, default="queued")
     status_note = Column(Text, nullable=True)
     deleted_at = Column(DateTime, nullable=True)
+
+
+class AddressDetectorChannelState(Base):
+    """Address detector scheduler cursor and recoverable active batch per channel."""
+
+    __tablename__ = "discord_address_detector_channel_state"
+
+    channel_id = Column(String(25), primary_key=True)
+    last_message_id = Column(String(25), nullable=True)
+    pending_batch = Column(JSON, nullable=True)
+    updated_at = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
+
+
+class AddressDetectorPendingWork(Base):
+    """Durable detector input; deliberately separate from moderator signals."""
+
+    __tablename__ = "discord_address_detector_pending_work"
+    __table_args__ = (UniqueConstraint("channel_id", "message_id", "revision", name="uq_address_detector_pending_revision"),
+                      Index("ix_address_detector_pending_state_order", "channel_id", "state", "message_id"))
+
+    id = Column(Integer, primary_key=True)
+    channel_id = Column(String(25), nullable=False)
+    message_id = Column(String(25), nullable=False)
+    revision = Column(Integer, nullable=False)
+    author_id = Column(String(25), nullable=False)
+    content = Column(Text, nullable=False)
+    reply_target_id = Column(String(25), nullable=True)
+    event_order = Column(BigInteger, nullable=False)
+    payload = Column(JSON, nullable=False)
+    state = Column(String(24), nullable=False, default="pending")
+    attempts = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, nullable=False, default=func.now())
+
+
+class AddressDetectorRevisionState(Base):
+    """Compact revision fence retained after terminal pending rows are pruned."""
+
+    __tablename__ = "discord_address_detector_revision_state"
+    __table_args__ = (UniqueConstraint("channel_id", "message_id", name="uq_address_detector_revision_message"),)
+
+    id = Column(Integer, primary_key=True)
+    channel_id = Column(String(25), nullable=False)
+    message_id = Column(String(25), nullable=False)
+    revision = Column(Integer, nullable=False)
+    updated_at = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
+
+
+class AddressDetectorBatchAudit(Base):
+    """One compact correlation record per submitted detector batch."""
+
+    __tablename__ = "discord_address_detector_batch_audit"
+    __table_args__ = (
+        UniqueConstraint("batch_key", name="uq_address_detector_batch_key"),
+        Index("ix_address_detector_batch_audit_created", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    batch_key = Column(String(128), nullable=False)
+    channel_id = Column(String(25), nullable=False)
+    ticket_id = Column(Integer, nullable=True)
+    items = Column(JSON, nullable=False)
+    outcomes = Column(JSON, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=func.now())
 
 
 class DiscordAntiRaidLog(Base):

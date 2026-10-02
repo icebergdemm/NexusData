@@ -80,7 +80,7 @@ def test_uncertain_keeps_reaction_and_sends_signal() -> None:
     assert signals == [(2, Verdict.UNCERTAIN)]
 
 
-def test_timeout_falls_back_to_uncertain() -> None:
+def test_timeout_is_operational_failure_not_a_semantic_uncertain_signal() -> None:
     async def scenario():
         reactions = FakeReactions()
         signals: list[tuple[int, Verdict]] = []
@@ -94,9 +94,11 @@ def test_timeout_falls_back_to_uncertain() -> None:
         await service.submit(Job(3))
         await service.join()
         await service.stop()
-        return signals
+        return reactions.events, signals
 
-    assert run(scenario()) == [(3, Verdict.UNCERTAIN)]
+    events, signals = run(scenario())
+    assert events == [("add", 3)]
+    assert signals == []
 
 
 def test_queue_overflow_does_not_start_unbounded_work() -> None:
@@ -115,4 +117,4 @@ def test_queue_overflow_does_not_start_unbounded_work() -> None:
 
     calls, events = run(scenario())
     assert calls == [4]
-    assert events[-1] == ("remove", 5)
+    assert events[-1] == ("add", 5)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from typing import Any
 
@@ -159,6 +160,17 @@ class DiscordNotifier:
                 return
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 logger.warning("address_detector incident_message_unavailable incident_id=%s", record.incident_id)
+        marker = self._action_marker(result)
+        if marker and hasattr(target, "history"):
+            try:
+                history = target.history(limit=None, after=context.timestamp) if context.timestamp else target.history(limit=100)
+                async for previous in history:
+                    if any(marker in (item.footer.text or "") for item in getattr(previous, "embeds", ())):
+                        await asyncio.to_thread(self.store.set_admin_message_id, context.message_id, int(previous.id))
+                        return
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                logger.warning("address_detector action_dedup_history_unavailable incident_id=%s", record.incident_id)
+                raise
         sent = await self._send_with_retry(target, content, embed, allowed_mentions)
         await asyncio.to_thread(self.store.set_admin_message_id, context.message_id, sent.id)
 
@@ -230,5 +242,15 @@ class DiscordNotifier:
             lines.append(f"+ ещё {omitted} сообщений")
         context_value = "\n".join(lines) or "нет предыдущих сообщений"
         embed.add_field(name="Контекст incident", value=_clip(context_value, 1024), inline=False)
-        embed.set_footer(text="Автоматический сигнал. Не является взысканием")
+        footer = "Автоматический сигнал. Не является взысканием"
+        marker = DiscordNotifier._action_marker(result)
+        if marker:
+            footer += f" · {marker}"
+        embed.set_footer(text=footer)
         return embed
+
+    @staticmethod
+    def _action_marker(result: AnalysisResult) -> str | None:
+        if not result.idempotency_key:
+            return None
+        return "AD-" + hashlib.sha256(result.idempotency_key.encode()).hexdigest()[:24]

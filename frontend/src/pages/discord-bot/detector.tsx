@@ -28,10 +28,10 @@ interface DetectorEffective {
   enabled: boolean
   monitored_channel_count: number
   signals_channel_configured: boolean
+  signals_channel_overlaps_monitored: boolean
   moderator_role_configured: boolean
   emoji_configured: boolean
-  analyzer_mode: string
-  model_configured: boolean
+  llm_enabled?: boolean
   monitored_channel_ids: string[]
   excluded_channel_ids: string[]
   signals_channel_id: string
@@ -43,8 +43,14 @@ interface DetectorResponse {
   runtime: {
     active: boolean
     queue_depth: number
-    queue_capacity?: number
     counters?: Record<string, number>
+    llm_enabled?: boolean
+    scoped_messages_per_minute?: number
+    batches_per_minute?: number
+    queue_wait_ms?: { count: number; avg: number | null; p95: number | null }
+    total_latency_ms?: { count: number; avg: number | null; p95: number | null }
+    backend_latency_ms?: { count: number; avg: number | null; p95: number | null }
+    last_classifier_error?: string | null
     events?: { at: string; event: string; count: number; level?: "info" | "warning" | "error"; detail?: string }[]
   }
   config_error: string | null
@@ -343,6 +349,7 @@ export function AddressDetectorTab({ data, onSave }: Props) {
   const effective = detector?.effective
   const canEdit = !!data?.can_manage_config
   const enabled = configured(data, "moderation_address_detector_enabled", effective?.enabled ? "true" : "false") === "true"
+  const llmEnabled = configured(data, "address_llm_enabled", effective?.llm_enabled ? "true" : "false") === "true"
   const active = !!detector?.runtime.active
   const monitoredIds = effective?.monitored_channel_ids ?? parseIds(configured(data, "monitored_channel_ids", ""))
   const signalChannelId = effective?.signals_channel_id ?? configured(data, "moderation_signals_channel_id", "")
@@ -354,19 +361,24 @@ export function AddressDetectorTab({ data, onSave }: Props) {
   const warning = [...(detector?.runtime.events ?? [])].reverse().find((entry) =>
     entry.event === "startup_validation_warning" || entry.event === "model_degraded",
   )
+  const scopeWarning = effective?.signals_channel_overlaps_monitored
+    ? "Канал сигналов входит в whitelist, но исключён из мониторинга. Уберите его из разрешённых каналов."
+    : undefined
+  const warningText = scopeWarning ?? warning?.detail
+  const lastQwenEvent = [...(detector?.runtime.events ?? [])].reverse().find((entry) => entry.event.includes("qwen") || entry.event.includes("gateway") || entry.event.includes("batch"))
   const statusReason = detector?.config_error ?? diagnostic?.detail ?? (!monitoredIds.length && enabled ? "whitelist каналов пуст" : undefined)
-  const statusText = statusReason ? "Не запущен" : active && warning ? "Активен с предупреждением" : active ? "Активен" : enabled ? "Ожидает запуска" : "Выключен"
-  const statusClass = statusReason ? "border-destructive/50 bg-destructive/5" : warning ? "border-amber-500/40 bg-amber-500/5" : active ? "border-emerald-500/40 bg-emerald-500/5" : "border-border"
+  const statusText = statusReason ? "Не запущен" : active && warningText ? "Активен с предупреждением" : active ? "Активен" : enabled ? "Ожидает запуска" : "Выключен"
+  const statusClass = statusReason ? "border-destructive/50 bg-destructive/5" : warningText ? "border-amber-500/40 bg-amber-500/5" : active ? "border-emerald-500/40 bg-emerald-500/5" : "border-border"
 
   return (
     <div className="space-y-4">
       <Card className={statusClass}>
         <CardContent className="flex flex-wrap items-center justify-between gap-4 py-4">
           <div className="flex items-center gap-3">
-            {statusReason ? <CircleAlert className="size-5 text-destructive" /> : warning ? <CircleAlert className="size-5 text-amber-300" /> : active ? <CircleCheck className="size-5 text-emerald-500" /> : <Power className="size-5 text-muted-foreground" />}
+            {statusReason ? <CircleAlert className="size-5 text-destructive" /> : warningText ? <CircleAlert className="size-5 text-amber-300" /> : active ? <CircleCheck className="size-5 text-emerald-500" /> : <Power className="size-5 text-muted-foreground" />}
             <div>
               <p className="font-medium">Детектор обращений</p>
-              <p className="text-xs text-muted-foreground">{statusText}. {statusReason ?? warning?.detail ?? "Бот только сигнализирует модераторам и ничего не применяет к участнику."}</p>
+              <p className="text-xs text-muted-foreground">{statusText}. {statusReason ?? warningText ?? "Бот только сигнализирует модераторам и ничего не применяет к участнику."}</p>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -467,24 +479,49 @@ export function AddressDetectorTab({ data, onSave }: Props) {
       </div>
 
       <Card>
+        <CardHeader><CardTitle className="flex items-center gap-2 text-sm"><Activity className="size-4" /> Qwen semantic classifier</CardTitle></CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-sm">
+              <Badge variant={llmEnabled ? "default" : "secondary"}>{llmEnabled ? "production classifier" : "выключен"}</Badge>
+              <span className="text-xs text-muted-foreground">Только Qwen определяет семантическую классификацию; взысканий нет.</span>
+            </div>
+            <Switch checked={llmEnabled} disabled={!canEdit} onCheckedChange={(checked) => onSave("address_llm_enabled", checked ? "true" : "false")} aria-label="Включить Qwen classifier" />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <ConfigField label="Idle debounce, секунд" configKey="address_llm_idle_debounce_seconds" value={configured(data, "address_llm_idle_debounce_seconds", "0.5")} disabled={!canEdit} onSave={onSave} />
+            <ConfigField label="Hard batch delay, секунд" configKey="address_llm_hard_batch_delay_seconds" value={configured(data, "address_llm_hard_batch_delay_seconds", "2.0")} disabled={!canEdit} onSave={onSave} />
+            <ConfigField label="Новых сообщений в batch (до 8)" configKey="address_llm_max_new_messages" value={configured(data, "address_llm_max_new_messages", "8")} disabled={!canEdit} onSave={onSave} />
+            <ConfigField label="Сообщений в payload (до 24)" configKey="address_llm_max_payload_messages" value={configured(data, "address_llm_max_payload_messages", "24")} disabled={!canEdit} onSave={onSave} />
+            <div><p className="font-mono text-lg">{detector?.runtime.scoped_messages_per_minute ?? 0}</p><p className="text-xs text-muted-foreground">scoped messages / min</p></div>
+            <div><p className="font-mono text-lg">{detector?.runtime.batches_per_minute ?? 0}</p><p className="text-xs text-muted-foreground">Qwen batches / min</p></div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-xs">
+            <div><p className="font-mono text-base">{detector?.runtime.counters?.classification_direct_familiar_address ?? 0}</p><p className="text-muted-foreground">direct familiar</p></div>
+            <div><p className="font-mono text-base">{detector?.runtime.counters?.classification_ambiguous ?? 0}</p><p className="text-muted-foreground">ambiguous</p></div>
+            <div><p className="font-mono text-base">{detector?.runtime.counters?.qwen_failed ?? 0}</p><p className="text-muted-foreground">failed</p></div>
+            <div><p className="font-mono text-base">{detector?.runtime.queue_depth ?? 0} / 1</p><p className="text-muted-foreground">durable revisions / active gateway slot</p></div>
+            <div><p className="font-mono text-base">{detector?.runtime.queue_wait_ms?.avg ?? "—"} / {detector?.runtime.queue_wait_ms?.p95 ?? "—"} ms</p><p className="text-muted-foreground">queue avg / p95</p></div>
+            <div><p className="font-mono text-base">{detector?.runtime.backend_latency_ms?.avg ?? "—"} / {detector?.runtime.backend_latency_ms?.p95 ?? "—"} ms</p><p className="text-muted-foreground">backend avg / p95</p></div>
+            <div><p className="font-mono text-base">{lastQwenEvent?.event ?? "—"}</p><p className="text-muted-foreground">последний статус</p></div>
+          </div>
+          {detector?.runtime.last_classifier_error && <p className="break-words rounded border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">Последняя ошибка: {detector.runtime.last_classifier_error}</p>}
+        </CardContent>
+      </Card>
+
+      <Card>
         <CardHeader><CardTitle className="text-sm">Контекст и обработка</CardTitle></CardHeader>
         <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <ConfigField label="Сообщений контекста (1–5)" configKey="address_context_messages" value={configured(data, "address_context_messages", "4")} disabled={!canEdit} onSave={onSave} />
           <ConfigField label="Окно incident, секунд" configKey="address_incident_window_seconds" value={configured(data, "address_incident_window_seconds", "120")} disabled={!canEdit} onSave={onSave} />
-          <ConfigField label="Режим" configKey="address_analyzer_mode" value={configured(data, "address_analyzer_mode", "hybrid")} disabled={!canEdit} hint="rules или hybrid" onSave={onSave} />
-          <ConfigField label="Timeout анализа, секунд" configKey="address_analysis_timeout_seconds" value={configured(data, "address_analysis_timeout_seconds", "15")} disabled={!canEdit} onSave={onSave} />
-          <ConfigField label="Порог вероятного нарушения" configKey="address_likely_threshold" value={configured(data, "address_likely_threshold", "0.75")} disabled={!canEdit} onSave={onSave} />
-          <ConfigField label="Порог чистого сообщения" configKey="address_clean_threshold" value={configured(data, "address_clean_threshold", "0.80")} disabled={!canEdit} onSave={onSave} />
-          <ConfigField label="Путь к ONNX модели" configKey="onnx_model_path" value={configured(data, "onnx_model_path", "")} disabled={!canEdit} hint="Файл размещается оператором вне Git." onSave={onSave} />
-          <ConfigField label="Путь к tokenizer.json" configKey="onnx_tokenizer_path" value={configured(data, "onnx_tokenizer_path", "")} disabled={!canEdit} onSave={onSave} />
         </CardContent>
       </Card>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Card><CardContent className="py-4"><p className="font-mono text-xl">{effective?.monitored_channel_count ?? 0}</p><p className="text-xs text-muted-foreground">каналов в effective whitelist</p></CardContent></Card>
         <Card><CardContent className="py-4"><p className="font-mono text-xl">{detector?.runtime.queue_depth ?? 0}</p><p className="text-xs text-muted-foreground">задач в очереди</p></CardContent></Card>
-        <Card><CardContent className="py-4"><p className="font-mono text-xl">{detector?.runtime.counters?.candidate_detected ?? 0}</p><p className="text-xs text-muted-foreground">candidate detected</p></CardContent></Card>
-        <Card><CardContent className="py-4"><p className="font-mono text-xl">{effective?.analyzer_mode ?? "-"}</p><p className="text-xs text-muted-foreground">режим анализатора</p></CardContent></Card>
+        <Card><CardContent className="py-4"><p className="font-mono text-xl">{detector?.runtime.counters?.scoped_revisions ?? 0}</p><p className="text-xs text-muted-foreground">scoped revisions received</p></CardContent></Card>
+        <Card><CardContent className="py-4"><p className="font-mono text-xl">unified Qwen</p><p className="text-xs text-muted-foreground">все scoped сообщения</p></CardContent></Card>
       </div>
 
       <Card>
