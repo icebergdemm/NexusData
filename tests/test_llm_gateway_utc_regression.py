@@ -39,7 +39,7 @@ def _payload():
 
 def _result():
     return {"choices": [{"message": {"content":
-        '{"results":[{"index":0,"classification":"direct_familiar_address","reason_code":"informal_imperative"}]}'
+        '{"r":[{"i":0,"c":"D","r":"ii","e":"скинь"}]}'
     }}]}
 
 

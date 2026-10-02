@@ -25,6 +25,12 @@ class AnalysisResult:
     operational_failure: bool = False
     classification: str | None = None
     reason_code: str | None = None
+    evidence: str | None = None
+    model_classification: str | None = None
+    model_reason_code: str | None = None
+    evidence_status: str | None = None
+    evidence_rejection_reason: str | None = None
+    action_eligible: bool = False
     ticket_id: int | None = None
     queue_wait_ms: int | None = None
     backend_ms: int | None = None

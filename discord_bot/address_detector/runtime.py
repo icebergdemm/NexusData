@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import inspect
 import json
 import logging
@@ -17,7 +18,7 @@ from .config import DetectorConfig
 from .context import AddressContext, ContextCollector
 from .filter import TriggerMatch, find_triggers
 from .persistence import AddressDetectorStore, AnalysisRecord
-from .qwen_classifier import CLIENT_ID, QwenSemanticAnalyzer, batch_idempotency_key, build_batch_context, configure_limits, verdict_for
+from .qwen_classifier import CLIENT_ID, QwenSemanticAnalyzer, apply_evidence_guard, batch_idempotency_key, build_batch_context, configure_limits, validate_direct_evidence, verdict_for
 from .scheduler import AddressDetectorScheduler
 from .scope import in_scope
 from .service import DetectorJob, ReactionPort
@@ -181,6 +182,26 @@ class AddressDetectorRuntime:
         context = job.context or job.candidate_context
         if context is None:
             context = self._candidate_context(job.message, job.match or find_triggers(getattr(job.message, "content", "")))
+        if result.classification == "direct_familiar_address":
+            verified, rejection = validate_direct_evidence(
+                context.raw_content, result.reason_code or "", result.evidence,
+            )
+            if not verified:
+                result = replace(
+                    result, verdict=Verdict.UNCERTAIN, classification="ambiguous",
+                    reason="insufficient_context", reason_code="insufficient_context",
+                    model_classification=result.model_classification or "direct_familiar_address",
+                    model_reason_code=result.model_reason_code or result.reason_code,
+                    evidence_status="rejected", evidence_rejection_reason=rejection,
+                    action_eligible=False,
+                )
+            else:
+                result = replace(
+                    result, model_classification=result.model_classification or result.classification,
+                    model_reason_code=result.model_reason_code or result.reason_code,
+                    evidence_status="verified", evidence_rejection_reason=None,
+                    action_eligible=True,
+                )
         async with self._classification_lock:
             if result.operational_failure:
                 try:
@@ -231,6 +252,11 @@ class AddressDetectorRuntime:
                 Verdict.LIKELY_VIOLATION: "analysis_likely",
             }[result.verdict]
             self._count(counter)
+            if result.evidence_status == "verified":
+                self._count("direct_evidence_verified")
+            elif result.evidence_status == "rejected":
+                self._count("direct_evidence_rejected")
+                self._event("direct_evidence_rejected", result.evidence_rejection_reason or "unsupported")
             if result.verdict is Verdict.LIKELY_VIOLATION:
                 self._count("qwen_direct")
                 await self._add_marker(job.message)
@@ -393,11 +419,13 @@ class AddressDetectorRuntime:
                 logger.exception("address_detector terminal_result_persist_failed batch=%s", batch["key"])
                 self._event("batch_persistence_wait", "terminal result not saved")
                 return True
+        content_by_index = {item["index"]: item["content"] for item in batch["items"]}
+        results = [apply_evidence_guard(result, content_by_index.get(result["index"], "")) for result in results]
         outcomes = list(batch.get("outcomes", []))
         for result in results:
             item = next(row for row in batch["items"] if row["index"] == result["index"])
             if result["index"] not in batch.get("applied_indexes", []):
-                if result["classification"] == "direct_familiar_address":
+                if result["classification"] == "direct_familiar_address" and result.get("action_eligible") is True:
                     intents = batch.setdefault("action_intents", {})
                     intent_key = str(result["index"])
                     token = intents.get(intent_key) or f"{batch['key']}:{item['message_id']}:{item['revision']}"
@@ -406,7 +434,12 @@ class AddressDetectorRuntime:
                     intent = {
                         "index": item["index"], "message_id": item["message_id"],
                         "revision": item["revision"], "classification": result["classification"],
-                        "reason_code": result["reason_code"], "action": "moderator_signal_pending",
+                        "reason_code": result["reason_code"], "evidence": result.get("evidence"),
+                        "evidence_validation": result.get("evidence_status"),
+                        "model_classification": result.get("model_classification"),
+                        "model_reason_code": result.get("model_reason_code"),
+                        "action_eligible": result.get("action_eligible") is True,
+                        "action": "moderator_signal_pending",
                         "action_token": token,
                     }
                     audit_outcomes = [row for row in outcomes if row.get("index") != item["index"]]
@@ -430,16 +463,30 @@ class AddressDetectorRuntime:
             self._count("stale_result_ignored")
             return {"index": item["index"], "message_id": message_id, "revision": revision,
                     "classification": result["classification"], "reason_code": result["reason_code"],
+                    "model_classification": result.get("model_classification"),
+                    "model_reason_code": result.get("model_reason_code"), "evidence": result.get("evidence"),
+                    "evidence_validation": result.get("evidence_status"), "action_eligible": False,
                     "action": "none", "status": "superseded"}
         message = await self.resolve_message(channel_id, message_id) if self.resolve_message else None
         if message is not None and str(getattr(message, "content", "")) != item["content"]:
             self._count("stale_result_ignored")
             return {"index": item["index"], "message_id": message_id, "revision": revision,
                     "classification": result["classification"], "reason_code": result["reason_code"],
+                    "model_classification": result.get("model_classification"),
+                    "model_reason_code": result.get("model_reason_code"), "evidence": result.get("evidence"),
+                    "evidence_validation": result.get("evidence_status"), "action_eligible": False,
                     "action": "none", "status": "content_fenced"}
         classification = result["classification"]
         outcome = {"index": item["index"], "message_id": message_id, "revision": revision, "classification": classification,
                    "reason_code": result["reason_code"], "action": "none",
+                   "model_classification": result.get("model_classification", classification),
+                   "model_reason_code": result.get("model_reason_code", result.get("reason_code")),
+                   "evidence": result.get("evidence"),
+                   "evidence_validation": result.get("evidence_status", "not_applicable"),
+                   "evidence_rejection_reason": result.get("evidence_rejection_reason"),
+                   "action_eligible": result.get("action_eligible") is True,
+                   **({"status": "direct_evidence_rejected"}
+                      if result.get("evidence_status") == "rejected" else {}),
                    **({"action_token": batch["action_intents"][str(item["index"])]}
                       if str(item["index"]) in batch.get("action_intents", {}) else {})}
         self._count(f"classification_{classification}")
@@ -469,13 +516,22 @@ class AddressDetectorRuntime:
             verdict=verdict_for(classification), reason=result["reason_code"], classifier_version="qwen",
             matched_signals=(result["reason_code"],), classification=classification,
             reason_code=result["reason_code"], ticket_id=timing["ticket_id"],
+            evidence=result.get("evidence"),
+            model_classification=result.get("model_classification"),
+            model_reason_code=result.get("model_reason_code"),
+            evidence_status=result.get("evidence_status"),
+            evidence_rejection_reason=result.get("evidence_rejection_reason"),
+            action_eligible=result.get("action_eligible", False),
             idempotency_key=batch.get("action_intents", {}).get(str(item["index"]), batch["key"]),
             queue_wait_ms=timing["queue_wait_ms"],
             backend_ms=timing["backend_ms"], total_ms=timing["total_ms"],
             request_chars=len(json.dumps(batch["payload"], ensure_ascii=False, separators=(",", ":"))),
         )
         await self._classified(DetectorJob(message, match, revision, context, context), result_obj)
-        outcome["action"] = "moderator_signal" if classification == "direct_familiar_address" else "review_record"
+        outcome["action"] = (
+            "moderator_signal" if classification == "direct_familiar_address"
+            else "none" if result.get("evidence_status") == "rejected" else "review_record"
+        )
         return outcome
 
     def _count(self, name: str, value: int = 1, *, rate: bool = False) -> None:

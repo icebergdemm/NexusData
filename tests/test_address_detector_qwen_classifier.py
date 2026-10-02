@@ -1,78 +1,107 @@
-"""Qwen classifier protocol checks."""
-
-import asyncio
+import json
 
 import pytest
 
-from discord_bot.address_detector.config import load_detector_config
-from discord_bot.address_detector.qwen_classifier import (
-    CLASSIFICATIONS,
-    RESPONSE_FORMAT,
-    parse_content,
-    parse_results,
-    verdict_for,
-)
-from discord_bot.address_detector.analyzer import Verdict
+import discord_bot.address_detector.qwen_classifier as qwen
 
 
-def test_classifier_helpers_use_the_compact_production_contract():
-    assert parse_content is parse_results
-    assert verdict_for("no_violation") is Verdict.CLEAN
-    assert "direct_familiar_address" in CLASSIFICATIONS
-    assert RESPONSE_FORMAT["json_schema"]["strict"] is True
-    assert verdict_for("direct_familiar_address") is Verdict.LIKELY_VIOLATION
+def test_parser_accepts_compact_evidence_records_and_normalizes_classes():
+    content = json.dumps({"r": [
+        {"i": 4, "c": "D", "r": "ip", "e": "Ты"},
+        {"i": 5, "c": "C", "r": "o", "e": None},
+        {"i": 6, "c": "Q", "r": "qc", "e": None},
+        {"i": 7, "c": "M", "r": "md", "e": None},
+        {"i": 8, "c": "A", "r": "ic", "e": None},
+    ]}, ensure_ascii=False)
+
+    assert qwen.parse_results(content, [4, 5, 6, 7, 8]) == [
+        {"index": 4, "classification": "direct_familiar_address", "reason_code": "informal_pronoun", "evidence": "Ты"},
+        {"index": 5, "classification": "no_violation", "reason_code": "other", "evidence": None},
+        {"index": 6, "classification": "quoted_or_reported", "reason_code": "quoted_content", "evidence": None},
+        {"index": 7, "classification": "example_or_metadiscussion", "reason_code": "metadiscussion", "evidence": None},
+        {"index": 8, "classification": "ambiguous", "reason_code": "insufficient_context", "evidence": None},
+    ]
 
 
-def test_legacy_shadow_flag_is_ignored():
-    config = load_detector_config(object(), {"address_llm_shadow_enabled": "true"})
-    assert config.llm_enabled is False
-    assert config.llm_max_new_messages == 8
+@pytest.mark.parametrize("content", [
+    '{"r":[]}',
+    '{"r":[{"i":1,"c":"D","r":"ip","e":"ты"},{"i":1,"c":"D","r":"ip","e":"ты"}]}',
+    '{"r":[{"i":2,"c":"D","r":"ip","e":"ты"}]}',
+    '{"r":[{"i":1,"c":"D","r":"qc","e":"ты"}]}',
+    '{"r":[{"i":1,"c":"C","r":"o","e":"unexpected"}]}',
+    '{"r":[{"i":1,"c":"D","r":"ip","e":"' + "x" * 49 + '"}]}',
+])
+def test_parser_rejects_structurally_invalid_or_incompatible_evidence(content):
+    with pytest.raises(ValueError):
+        qwen.parse_results(content, [1])
 
 
-def test_ticket_metadata_persistence_failure_preserves_submitted_ticket(monkeypatch):
-    import discord_bot.address_detector.qwen_classifier as qwen
-    from discord_bot.address_detector.config import DetectorConfig
-    from services_llm_gateway import LLMGatewayError
+@pytest.mark.parametrize(("target", "reason", "evidence", "expected"), [
+    ("Ты можешь посмотреть третий раздел?", "informal_pronoun", "Ты", (True, None)),
+    ("Ты терпила", "informal_pronoun", "Ты", (True, None)),
+    ("мечты сбываются", "informal_pronoun", "ты", (False, "reason_evidence_mismatch")),
+    ("Определитесь уже", "informal_pronoun", "Определитесь", (False, "reason_evidence_mismatch")),
+    ("Определитесь уже", "informal_imperative", "Определитесь", (False, "plural_or_polite_imperative")),
+    ("Спасибо, я придержу вам место", "informal_pronoun", "вам", (False, "reason_evidence_mismatch")),
+    ("Фраза «ты можешь посмотреть третий раздел?» считается фамильярной?", "informal_pronoun", "ты", (False, "quoted_or_code_evidence")),
+    ("Глянь третий раздел", "informal_imperative", "Глянь", (True, None)),
+    ("Посмотри", "informal_imperative", "Посмотри", (True, None)),
+    ("Посмотрите журнал", "informal_imperative", "Посмотрите", (False, "plural_or_polite_imperative")),
+    ("Сделайте отчёт", "informal_imperative", "Сделайте", (False, "plural_or_polite_imperative")),
+    ("Подойдите сюда", "informal_imperative", "Подойдите", (False, "plural_or_polite_imperative")),
+    ("> ты понял?", "informal_pronoun", "ты", (False, "quoted_or_code_evidence")),
+    ("`ты` понял?", "informal_pronoun", "ты", (False, "quoted_or_code_evidence")),
+    ("```text\nты понял?\n```", "informal_pronoun", "ты", (False, "quoted_or_code_evidence")),
+    ("Проверка завершена", "informal_imperative", "глянь", (False, "evidence_not_in_target")),
+    ("!", "other", "!", (False, "invalid_evidence_span")),
+])
+def test_direct_evidence_must_be_exact_target_evidence_outside_quotes(target, reason, evidence, expected):
+    validator = getattr(qwen, "validate_direct_evidence", None)
 
-    submitted = []
-    monkeypatch.setattr(qwen, "find_ticket", lambda *_args: None)
-    monkeypatch.setattr(qwen, "submit", lambda *_args, **_kwargs: submitted.append(44) or 44)
-    monkeypatch.setattr(qwen, "request_params", lambda _tokens: {})
-
-    def fail_metadata(_ticket_id, _attempt):
-        raise OSError("database unavailable")
-
-    async def scenario():
-        analyzer = qwen.QwenSemanticAnalyzer(DetectorConfig())
-        await analyzer.classify_batch(
-            {"messages": [], "classify_indexes": [0]}, "stable-key", on_ticket=fail_metadata,
-        )
-
-    with pytest.raises(LLMGatewayError, match="ticket metadata persistence failed"):
-        asyncio.run(scenario())
-    assert submitted == [44]
+    assert callable(validator), "direct evidence validator is missing"
+    assert validator(target, reason, evidence) == expected
 
 
-def test_cancel_persistence_failure_keeps_live_ticket_in_recovery(monkeypatch):
-    import discord_bot.address_detector.qwen_classifier as qwen
-    from discord_bot.address_detector.config import DetectorConfig
-    from services_llm_gateway import LLMGatewayError
+def test_context_words_cannot_validate_evidence_absent_from_target():
+    rows = [{"index": 1, "classification": "direct_familiar_address",
+             "reason_code": "informal_pronoun", "evidence": "ты"}]
+    guarded = qwen.validate_results_evidence(rows, {"messages": [
+        {"index": 0, "text": "Ты понял?"},
+        {"index": 1, "text": "Определитесь уже"},
+    ]})
 
-    submitted = []
-    monkeypatch.setattr(qwen, "find_ticket", lambda *_args: None)
-    monkeypatch.setattr(qwen, "submit", lambda *_args, **_kwargs: submitted.append(45) or 45)
-    monkeypatch.setattr(qwen, "poll", lambda _ticket_id: {"status": "queued", "request_age_ms": 1000})
+    assert guarded[0]["classification"] == "ambiguous"
+    assert guarded[0]["evidence_rejection_reason"] == "evidence_not_in_target"
 
-    def fail_cancel(_ticket_id):
-        raise OSError("database unavailable")
 
-    monkeypatch.setattr(qwen, "cancel", fail_cancel)
-    monkeypatch.setattr(qwen, "request_params", lambda _tokens: {})
+@pytest.mark.parametrize("form", [
+    "ты", "тебя", "тебе", "тобой", "тобою", "твой", "твоя", "твоё", "твое", "твои",
+    "твоего", "твоей", "твоему", "твоим", "твоими", "твоих", "твою", "твоём", "твоем",
+])
+def test_closed_informal_pronoun_family_is_verified(form):
+    assert qwen.validate_direct_evidence(f"Привет, {form}.", "informal_pronoun", form) == (True, None)
 
-    async def scenario():
-        analyzer = qwen.QwenSemanticAnalyzer(DetectorConfig(llm_max_request_age_seconds=1))
-        await analyzer.classify_batch({"messages": [], "classify_indexes": [0]}, "stable-key")
 
-    with pytest.raises(LLMGatewayError, match="cancellation failed"):
-        asyncio.run(scenario())
-    assert submitted == [45]
+@pytest.mark.parametrize("form", ["вы", "вас", "вам", "вами", "ваш", "ваша", "ваше", "ваши", "вашего", "вашим"])
+def test_formal_pronouns_never_verify_informal_evidence(form):
+    assert qwen.validate_direct_evidence(f"Привет, {form}.", "informal_pronoun", form) == (
+        False, "reason_evidence_mismatch",
+    )
+
+
+def test_missing_evidence_downgrades_only_its_direct_result():
+    rows = qwen.parse_results(json.dumps({"r": [
+        {"i": 1, "c": "D", "r": "ip", "e": None},
+        {"i": 2, "c": "D", "r": "ip", "e": "Ты"},
+    ]}, ensure_ascii=False), [1, 2])
+
+    guarded = qwen.validate_results_evidence(rows, {"messages": [
+        {"index": 1, "text": "Ты терпила"},
+        {"index": 2, "text": "Ты терпила"},
+    ]})
+
+    assert guarded[0]["classification"] == "ambiguous"
+    assert guarded[0]["model_classification"] == "direct_familiar_address"
+    assert guarded[0]["evidence_status"] == "rejected"
+    assert guarded[1]["classification"] == "direct_familiar_address"
+    assert guarded[1]["action_eligible"] is True

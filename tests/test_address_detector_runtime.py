@@ -1,12 +1,87 @@
 import asyncio
-import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import time
 from types import SimpleNamespace
 
 import discord_bot.address_detector.runtime as runtime_module
-from discord_bot.address_detector.analyzer import AnalysisResult, Verdict
+from discord_bot.address_detector.analyzer import Verdict
 from discord_bot.address_detector.config import DetectorConfig
 from discord_bot.address_detector.runtime import AddressDetectorRuntime
+
+
+class Store:
+    def __init__(self):
+        self.work, self.states, self.analyses, self.signals = {}, {}, [], {}
+        self.created_batches = []
+        self.saved_audit_outcomes = []
+
+    def put_message_work(self, channel_id, message_id, author_id, content, reply_target_id, payload, *, edit=False):
+        key = (channel_id, message_id)
+        old = self.work.get(key)
+        revision = old["revision"] + 1 if old and edit else old["revision"] if old else 1
+        self.work[key] = {"channel_id": channel_id, "message_id": message_id, "author_id": author_id,
+                          "content": content, "reply_target_id": reply_target_id, "revision": revision,
+                          "event_order": message_id, "payload": payload,
+                          "created_at": (datetime.now(timezone.utc) - timedelta(seconds=3)).isoformat(),
+                          "age_seconds": 3,
+                          "state": "pending"}
+        return revision
+
+    def pending_work(self, channel_id=None):
+        return sorted([dict(row) for row in self.work.values() if row["state"] == "pending"
+                       and (channel_id is None or row["channel_id"] == channel_id)],
+                      key=lambda row: (row["channel_id"], row["event_order"]))
+
+    def detector_channel_states(self):
+        return [{"channel_id": key, "last_message_id": 0, "pending_batch": value}
+                for key, value in self.states.items()]
+
+    def clear_legacy_batch(self, channel_id, key):
+        if self.states.get(channel_id, {}).get("key") == key:
+            self.states[channel_id] = None
+
+    def save_active_batch(self, channel_id, batch):
+        self.states[channel_id] = batch
+        self.created_batches.append(batch)
+
+    def update_active_batch(self, channel_id, batch):
+        self.states[channel_id] = batch
+
+    def update_batch_state(self, channel_id, batch, state, **values):
+        value = {**batch, **values, "state": state}
+        self.states[channel_id] = value
+        return value
+
+    def set_batch_ticket(self, _key, _ticket_id):
+        pass
+
+    def save_batch_outcomes(self, _key, outcomes):
+        self.saved_audit_outcomes.append([dict(row) for row in outcomes])
+
+    def complete_detector_batch(self, channel_id, batch, _outcomes):
+        for item in batch["items"]:
+            row = self.work[(channel_id, item["message_id"])]
+            if row["revision"] == item["revision"]:
+                row["state"] = "terminal"
+        self.states[channel_id] = None
+
+    def current_work_revision(self, channel_id, message_id):
+        row = self.work.get((channel_id, message_id))
+        return row["revision"] if row else None
+
+    def set_candidate_revision(self, context, _tokens, revision):
+        self.signals[context.message_id] = revision
+        return True
+
+    def get_signal(self, message_id):
+        return SimpleNamespace(channel_id=2, message_id=message_id) if message_id in self.signals else None
+
+    def record_analysis(self, context, result, _window, _revision):
+        self.analyses.append((context.message_id, result.classification))
+        return SimpleNamespace(incident_id=1, should_ping_moderators=True, message_count=1)
+
+    def mark_deleted(self, _message_id):
+        return True
 
 
 class Reactions:
@@ -20,608 +95,433 @@ class Reactions:
         self.events.append(("remove", message.id))
 
 
-class Store:
-    def __init__(self):
-        self.upserts = 0
-        self.analyses = []
-        self.clean_edits = []
-        self.revisions = {}
-        self.statuses = {}
-
-    def upsert_candidate(self, context, tokens):
-        self.upserts += 1
-        if context.message_id in self.revisions:
-            return False
-        self.revisions[context.message_id] = 1
-        self.statuses[context.message_id] = "queued"
-        return True
-
-    def update_candidate(self, context, tokens):
-        self.upserts += 1
-        revision = self.revisions.get(context.message_id, 0) + 1
-        self.revisions[context.message_id] = revision
-        self.statuses[context.message_id] = "queued"
-        return revision
-
-    def set_classifier_context(self, context, revision):
-        return self.is_current(context.message_id, revision)
-
-    def get_signal(self, message_id):
-        return SimpleNamespace(message_id=message_id) if message_id in self.revisions else None
-
-    def is_current(self, message_id, revision):
-        return self.revisions.get(message_id) == revision and self.statuses.get(message_id) != "deleted"
-
-    def record_analysis(self, context, result, window, revision=1):
-        if not self.is_current(context.message_id, revision):
-            return None
-        self.analyses.append((context.message_id, result.verdict))
-        self.statuses[context.message_id] = "classified"
-        return SimpleNamespace(incident_id=1, should_ping_moderators=True, message_count=1)
-
-    def mark_terminal(self, message_id, revision, status, note):
-        if self.is_current(message_id, revision):
-            self.statuses[message_id] = status
-            return True
-        return False
-
-    def mark_edit_clean(self, message_id, context=None):
-        self.clean_edits.append(message_id)
-        self.revisions[message_id] = self.revisions.get(message_id, 0) + 1
-        self.statuses[message_id] = "clean"
-        return True
-
-    def mark_deleted(self, message_id):
-        self.revisions[message_id] = self.revisions.get(message_id, 0) + 1
-        self.statuses[message_id] = "deleted"
-        return True
-
-    def pending_shadow(self):
-        return []
-
-
 class Analyzer:
-    async def analyze(self, context):
-        return AnalysisResult(Verdict.UNCERTAIN, 0.5, "test", "test")
+    def __init__(self, classification="no_violation"):
+        self.classification = classification
+        self.active, self.max_active, self.tickets = 0, 0, 0
+
+    async def classify_batch(self, payload, _key, **_kwargs):
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        self.tickets += 1
+        try:
+            result = [{"index": index, "classification": self.classification,
+                       "reason_code": "informal_imperative" if self.classification == "direct_familiar_address" else "other",
+                       "evidence": "глянь" if self.classification == "direct_familiar_address" else None}
+                      for index in payload["classify_indexes"]]
+            return result, {"ticket_id": self.tickets, "queue_wait_ms": 1, "backend_ms": 2, "total_ms": 3}
+        finally:
+            self.active -= 1
 
 
-class CleanAnalyzer:
-    async def analyze(self, context):
-        return AnalysisResult(Verdict.CLEAN, 0.99, "quoted example", "test")
-
-
-class LikelyAnalyzer:
-    async def analyze(self, context):
-        return AnalysisResult(Verdict.LIKELY_VIOLATION, 0.99, "direct address", "test")
-
-
-def msg(message_id, content):
-    async def rows():
+def message(message_id, content, *, author_id=3, reply=None):
+    async def history(**_kwargs):
         if False:
             yield None
-
-    return SimpleNamespace(
-        id=message_id,
-        content=content,
-        guild=SimpleNamespace(id=1),
-        channel=SimpleNamespace(id=2, history=lambda **_: rows()),
-        author=SimpleNamespace(id=3, display_name="User", bot=False),
-        mentions=[],
-        created_at=datetime.now(timezone.utc),
-        jump_url=f"https://discord.com/channels/1/2/{message_id}",
-        type=None,
-        webhook_id=None,
-    )
+    channel = SimpleNamespace(id=2, history=history)
+    return SimpleNamespace(id=message_id, content=content, guild=SimpleNamespace(id=1), channel=channel,
+                           author=SimpleNamespace(id=author_id, display_name="User", bot=False),
+                           mentions=[], reference=SimpleNamespace(message_id=reply, resolved=None) if reply else None,
+                           created_at=datetime.now(timezone.utc), jump_url=f"https://discord.com/channels/1/2/{message_id}",
+                           type=None, webhook_id=None)
 
 
-def config():
-    return DetectorConfig(enabled=True, monitored_channel_ids={2}, llm_enabled=True)
+def cfg(**values):
+    defaults = {"enabled": True, "monitored_channel_ids": {2}, "llm_enabled": True,
+                "llm_idle_debounce_seconds": 0.5, "llm_hard_batch_delay_seconds": 2.0}
+    return DetectorConfig(**(defaults | values))
 
 
-def _fake_qwen_response(monkeypatch, classification, reason_code):
-    import discord_bot.address_detector.qwen_shadow as qwen
-
-    captured = {}
-    monkeypatch.setattr(runtime_module, "configure_limits", lambda *args: None)
-    monkeypatch.setattr(qwen, "find_ticket", lambda *_args: None)
-
-    def submit(_client, messages, _params, **_kwargs):
-        captured["payload"] = json.loads(messages[1]["content"])
-        return 901
-
-    def poll(ticket_id):
-        index = captured["payload"]["classify_indexes"][0]
-        content = json.dumps({"results": [{
-            "index": index, "classification": classification, "reason_code": reason_code,
-        }]})
-        return {
-            "ticket_id": ticket_id, "status": "succeeded", "queue_wait_ms": 0, "backend_ms": 2,
-            "result": {"choices": [{"message": {"content": content}}]},
-        }
-
-    monkeypatch.setattr(qwen, "submit", submit)
-    monkeypatch.setattr(qwen, "poll", poll)
-    return captured
-
-
-def _qwen_message(message_id, content, *, author_id=3, message_type="default", history=(), reply=None):
-    message = msg(message_id, content)
-    message.author.id = author_id
-    message.type = SimpleNamespace(name=message_type)
-    message.reference = SimpleNamespace(message_id=reply.id, resolved=reply) if reply else None
-
-    async def rows():
-        for item in history:
-            yield item
-
-    message.channel.history = lambda **_kwargs: rows()
-    if reply:
-        reply.channel = message.channel
-    return message
-
-
-def test_candidate_uses_queue_and_signal_callback() -> None:
+def test_unified_mode_sends_clean_and_lexical_edge_cases_to_classifier(monkeypatch):
+    monkeypatch.setattr(runtime_module, "active_legacy_detector_tickets", lambda: [])
+    store, analyzer, reactions, signals = Store(), Analyzer(), Reactions(), []
+    messages = [message(10, "`ты`"), message(11, "> ты где?"), message(12, "Фраза ты считается фамильярной?")]
     async def scenario():
-        reactions = Reactions()
-        store = Store()
-        signals = []
-        runtime = AddressDetectorRuntime(
-            config(), reactions, analyzer=Analyzer(), store=store,
-            on_signal=lambda context, result, record: signals.append((context.message_id, result.verdict)),
-        )
+        runtime = AddressDetectorRuntime(cfg(), reactions, analyzer=analyzer, store=store,
+                                         resolve_message=lambda _c, mid: asyncio.sleep(0, result=next(m for m in messages if m.id == mid)),
+                                         on_signal=lambda *args: signals.append(args))
+        for item in messages:
+            assert await runtime.handle_message(item)
         await runtime.start()
-        assert await runtime.handle_message(msg(1, "ты где?"))
-        await runtime.join()
+        await asyncio.wait_for(runtime.join(), 5)
         await runtime.stop()
-        return reactions.events, store, signals
+    asyncio.run(scenario())
+    assert analyzer.tickets == 1
+    assert len(store.work) == 3
+    assert store.analyses == []
+    assert signals == [] and reactions.events == []
 
-    events, store, signals = asyncio.run(scenario())
-    assert events == [("add", 1)]
-    assert store.analyses == [(1, Verdict.UNCERTAIN)]
-    assert signals == [(1, Verdict.UNCERTAIN)]
+
+def test_direct_result_promotes_only_moderator_relevant_message(monkeypatch):
+    monkeypatch.setattr(runtime_module, "active_legacy_detector_tickets", lambda: [])
+    item, store, analyzer, reactions, signals = message(31, "глянь журнал"), Store(), Analyzer("direct_familiar_address"), Reactions(), []
+    def on_signal(context, result, _record):
+        assert store.states[2]["action_intents"]["0"].endswith(":31:1")
+        assert store.saved_audit_outcomes[-1][0]["action"] == "moderator_signal_pending"
+        signals.append((context.message_id, result.verdict))
+    async def scenario():
+        runtime = AddressDetectorRuntime(cfg(), reactions, analyzer=analyzer, store=store,
+                                         resolve_message=lambda _c, _mid: asyncio.sleep(0, result=item),
+                                         on_signal=on_signal)
+        await runtime.start(); await runtime.handle_message(item); await runtime.join(); await runtime.stop()
+    asyncio.run(scenario())
+    assert store.analyses == [(31, "direct_familiar_address")]
+    assert reactions.events == [("add", 31)]
+    assert signals == [(31, Verdict.LIKELY_VIOLATION)]
 
 
-def test_reply_passes_scope_prefilter_and_serializes_target_before_current(monkeypatch) -> None:
-    captured = _fake_qwen_response(monkeypatch, "direct_familiar_address", "informal_pronoun")
-    target = msg(100, "Что именно мне проверить?")
-    target.author.id = 20
-    target.created_at = datetime.now(timezone.utc)
-    current = _qwen_message(
-        101, "А ты сам не видишь?", author_id=21, message_type="reply",
-        history=(target,), reply=target,
-    )
-    reactions, store, signals = Reactions(), Store(), []
+def test_one_mixed_batch_applies_three_direct_actions_and_five_non_direct_results(monkeypatch):
+    monkeypatch.setattr(runtime_module, "active_legacy_detector_tickets", lambda: [])
+    texts = [
+        "Ты можешь посмотреть третий раздел?", "Ты терпила", "Определитесь уже",
+        "Спасибо, я придержу вам место", "по моему",
+        "Он написал: «ты можешь посмотреть третий раздел?»",
+        "Фраза «ты можешь посмотреть третий раздел?» считается фамильярной?",
+        "Глянь третий раздел",
+    ]
+    proposals = [
+        ("direct_familiar_address", "informal_pronoun", "Ты"),
+        ("direct_familiar_address", "informal_pronoun", "Ты"),
+        ("direct_familiar_address", "informal_imperative", "Определитесь"),
+        ("direct_familiar_address", "informal_pronoun", "вам"),
+        ("no_violation", "other", None),
+        ("quoted_or_reported", "quoted_content", None),
+        ("direct_familiar_address", "informal_pronoun", "ты"),
+        ("direct_familiar_address", "informal_imperative", "Глянь"),
+    ]
+    messages = [message(100 + i, text) for i, text in enumerate(texts)]
+    by_id = {item.id: item for item in messages}
+    store, reactions, signals = Store(), Reactions(), []
+    runtimes = []
+
+    class MixedAnalyzer:
+        async def classify_batch(self, payload, _key, **_kwargs):
+            assert payload["classify_indexes"] == list(range(8))
+            return ([{"index": i, "classification": value, "reason_code": reason, "evidence": evidence}
+                     for i, (value, reason, evidence) in enumerate(proposals)],
+                    {"ticket_id": 99, "queue_wait_ms": 1, "backend_ms": 2, "total_ms": 3})
 
     async def scenario():
         runtime = AddressDetectorRuntime(
-            config(), reactions, store=store,
-            on_signal=lambda context, result, _record: signals.append((context.message_id, result.verdict)),
+            cfg(), reactions, analyzer=MixedAnalyzer(), store=store,
+            resolve_message=lambda _c, mid: asyncio.sleep(0, result=by_id.get(mid)),
+            on_signal=lambda context, *_: signals.append(context.message_id),
         )
+        runtimes.append(runtime)
+        for item in messages:
+            await runtime.handle_message(item)
         await runtime.start()
-        accepted = await runtime.handle_message(current)
-        await runtime.join()
-        await runtime.stop()
-        return accepted
-
-    assert asyncio.run(scenario()) is True
-    assert store.upserts == 1
-    assert captured["payload"] == {
-        "messages": [
-            {"index": 0, "speaker": "s1", "text": "Что именно мне проверить?", "reply_to": None, "mentions": []},
-            {"index": 1, "speaker": "s2", "text": "А ты сам не видишь?", "reply_to": 0, "mentions": []},
-        ],
-        "classify_indexes": [1],
-    }
-    assert reactions.events == [("add", 101)]
-    assert signals == [(101, Verdict.LIKELY_VIOLATION)]
-
-
-def test_direct_reply_stays_direct_after_same_phrase_was_discussed_in_context(monkeypatch) -> None:
-    captured = _fake_qwen_response(monkeypatch, "direct_familiar_address", "informal_pronoun")
-    meta = msg(98, 'Фраза «а ты сам не видишь?» тут считается фамильярной?')
-    meta.author.id = 30
-    target = msg(100, "Что именно мне проверить?")
-    target.author.id = 20
-    duplicate_text = msg(101, "Что именно мне проверить?")
-    duplicate_text.author.id = 20
-    current = _qwen_message(
-        102, "А ты сам не видишь?", author_id=21, message_type="reply",
-        history=(meta, target, duplicate_text), reply=target,
-    )
-    reactions, store, signals = Reactions(), Store(), []
-
-    async def scenario():
-        runtime = AddressDetectorRuntime(
-            config(), reactions, store=store,
-            on_signal=lambda context, result, _record: signals.append((context.message_id, result.verdict)),
-        )
-        await runtime.start()
-        accepted = await runtime.handle_message(current)
-        await runtime.join()
-        await runtime.stop()
-        return accepted
-
-    assert asyncio.run(scenario()) is True
-    messages = captured["payload"]["messages"]
-    assert captured["payload"]["classify_indexes"] == [3]
-    assert messages[0]["text"] == meta.content
-    assert messages[1]["text"] == target.content
-    assert messages[1]["speaker"] == "s2"
-    assert messages[2]["text"] == duplicate_text.content
-    assert messages[2]["speaker"] == "s2"
-    assert messages[3]["speaker"] == "s3"
-    assert messages[3]["reply_to"] == 1
-    assert reactions.events == [("add", 102)]
-    assert signals == [(102, Verdict.LIKELY_VIOLATION)]
-
-
-def test_neighbor_quote_does_not_override_direct_classification_of_current_index(monkeypatch) -> None:
-    captured = _fake_qwen_response(monkeypatch, "direct_familiar_address", "informal_pronoun")
-    quote = msg(99, "Он мне написал: «глянь третий раздел». ")
-    quote.author.id = 3
-    current = _qwen_message(
-        101, "Ты можешь посмотреть третий раздел?", history=(quote,),
-    )
-    reactions, store, signals = Reactions(), Store(), []
-
-    async def scenario():
-        runtime = AddressDetectorRuntime(
-            config(), reactions, store=store,
-            on_signal=lambda context, result, _record: signals.append((context.message_id, result.verdict)),
-        )
-        await runtime.start()
-        assert await runtime.handle_message(current)
         await runtime.join()
         await runtime.stop()
 
     asyncio.run(scenario())
-    assert captured["payload"]["classify_indexes"] == [1]
-    assert captured["payload"]["messages"][0]["text"] == quote.content
-    assert captured["payload"]["messages"][1]["text"] == "Ты можешь посмотреть третий раздел?"
-    assert reactions.events == [("add", 101)]
-    assert signals == [(101, Verdict.LIKELY_VIOLATION)]
-
-
-def test_meta_reply_is_a_candidate_and_valid_meta_result_removes_marker(monkeypatch) -> None:
-    captured = _fake_qwen_response(monkeypatch, "example_or_metadiscussion", "metadiscussion")
-    target = msg(100, "Что именно мне проверить?")
-    target.author.id = 20
-    current = _qwen_message(
-        101, 'Фраза «а ты сам не видишь?» тут считается фамильярной?',
-        author_id=21, message_type="reply", reply=target,
-    )
-    reactions, store, signals = Reactions(), Store(), []
-
-    async def scenario():
-        runtime = AddressDetectorRuntime(
-            config(), reactions, store=store,
-            on_signal=lambda *args: signals.append(args),
-        )
-        await runtime.start()
-        accepted = await runtime.handle_message(current)
-        await runtime.join()
-        await runtime.stop()
-        return accepted
-
-    assert asyncio.run(scenario()) is True
-    assert store.upserts == 1
-    assert captured["payload"]["messages"][1]["reply_to"] == 0
-    assert captured["payload"]["classify_indexes"] == [1]
-    assert reactions.events == [("add", 101), ("remove", 101)]
-    assert signals == []
-
-
-def test_invalid_semantic_pair_keeps_marker_and_does_not_signal(monkeypatch) -> None:
-    _fake_qwen_response(monkeypatch, "quoted_or_reported", "no_specific_addressee")
-    current = _qwen_message(101, 'Он написал: «ты можешь подойти?»')
-    reactions, store, signals = Reactions(), Store(), []
-
-    async def scenario():
-        runtime = AddressDetectorRuntime(
-            config(), reactions, store=store,
-            on_signal=lambda *args: signals.append(args),
-        )
-        await runtime.start()
-        accepted = await runtime.handle_message(current)
-        await runtime.join()
-        await runtime.stop()
-        return accepted
-
-    assert asyncio.run(scenario()) is True
-    assert reactions.events == [("add", 101)]
-    assert store.statuses[101] == "classification_failed"
-    assert store.analyses == []
-    assert signals == []
-
-
-def test_standalone_meta_result_is_clean_and_removes_marker(monkeypatch) -> None:
-    _fake_qwen_response(monkeypatch, "example_or_metadiscussion", "metadiscussion")
-    current = _qwen_message(101, 'Фраза «ты можешь посмотреть третий раздел?» считается фамильярной?')
-    reactions, store, signals = Reactions(), Store(), []
-
-    async def scenario():
-        runtime = AddressDetectorRuntime(
-            config(), reactions, store=store,
-            on_signal=lambda *args: signals.append(args),
-        )
-        await runtime.start()
-        accepted = await runtime.handle_message(current)
-        await runtime.join()
-        await runtime.stop()
-        return accepted
-
-    assert asyncio.run(scenario()) is True
-    assert store.upserts == 1
-    assert reactions.events == [("add", 101), ("remove", 101)]
-    assert signals == []
-
-
-def test_likely_production_result_creates_exactly_one_moderator_signal() -> None:
-    async def scenario():
-        signals = []
-        store = Store()
-        runtime = AddressDetectorRuntime(
-            config(), Reactions(), analyzer=LikelyAnalyzer(), store=store,
-            on_signal=lambda context, result, record: signals.append((context.message_id, result.verdict)),
-        )
-        await runtime.start()
-        assert await runtime.handle_message(msg(17, "ты где?"))
-        await runtime.join()
-        await runtime.stop()
-        return store, signals
-
-    store, signals = asyncio.run(scenario())
-    assert store.analyses == [(17, Verdict.LIKELY_VIOLATION)]
-    assert signals == [(17, Verdict.LIKELY_VIOLATION)]
-
-
-def test_clean_candidate_is_persisted_as_terminal_and_counted() -> None:
-    async def scenario():
-        store = Store()
-        reactions = Reactions()
-        signals = []
-        runtime = AddressDetectorRuntime(
-            config(), reactions, analyzer=CleanAnalyzer(), store=store,
-            on_signal=lambda *args: signals.append(args),
-        )
-        await runtime.start()
-        assert await runtime.handle_message(msg(10, 'Он написал: "ты можешь скинуть лог?"'))
-        await runtime.join()
-        status = runtime.status()
-        await runtime.stop()
-        return store, reactions.events, signals, status
-
-    store, reactions, signals, status = asyncio.run(scenario())
-    assert store.statuses[10] == "classified"
-    assert store.analyses == [(10, Verdict.CLEAN)]
-    assert reactions.count(("remove", 10)) == 1
-    assert signals == []
-    assert status["counters"]["analysis_clean"] == 1
-
-
-def test_qwen_operational_failure_keeps_marker_and_sends_no_semantic_signal() -> None:
-    class FailedAnalyzer:
-        async def analyze(self, _context):
-            return AnalysisResult.failed("timeout", classifier_version="qwen")
-
-    async def scenario():
-        store = Store()
-        reactions = Reactions()
-        signals = []
-        runtime = AddressDetectorRuntime(
-            config(), reactions, analyzer=FailedAnalyzer(), store=store,
-            on_signal=lambda context, result, record: signals.append((context.message_id, result.verdict)),
-        )
-        await runtime.start()
-        assert await runtime.handle_message(msg(18, "ты, скинь журнал"))
-        await runtime.join()
-        status = runtime.status()
-        await runtime.stop()
-        return store, reactions, signals, status
-
-    store, reactions, signals, status = asyncio.run(scenario())
-    assert reactions.events == [("add", 18)]
-    assert store.statuses[18] == "classification_failed"
-    assert signals == []
-    assert status["counters"]["qwen_timeout"] == 1
-
-
-def test_queue_overflow_gets_terminal_state() -> None:
-    async def scenario():
-        gate = asyncio.Event()
-
-        class SlowAnalyzer:
-            async def analyze(self, context):
-                await gate.wait()
-                return AnalysisResult.uncertain("test")
-
-        store = Store()
-        signals = []
-        cfg = DetectorConfig(enabled=True, monitored_channel_ids={2}, queue_size=1, worker_count=1, llm_enabled=True)
-        runtime = AddressDetectorRuntime(
-            cfg, Reactions(), analyzer=SlowAnalyzer(), store=store,
-            on_signal=lambda context, result, record: signals.append(context.message_id),
-        )
-        await runtime.start()
-        assert await runtime.handle_message(msg(11, "ты где?"))
-        await asyncio.sleep(0)
-        assert await runtime.handle_message(msg(12, "ты тут?"))
-        assert not await runtime.handle_message(msg(13, "ты слышишь?"))
-        gate.set()
-        await runtime.join()
-        await runtime.stop()
-        return store, signals, runtime.status()
-
-    store, signals, status = asyncio.run(scenario())
-    assert store.statuses[13] == "queue_overflow"
-    assert 13 not in signals
-    assert status["counters"]["candidate_queue_overflow"] == 1
-
-
-def test_non_candidate_never_touches_store_or_history() -> None:
-    async def scenario():
-        store = Store()
-        runtime = AddressDetectorRuntime(config(), Reactions(), analyzer=Analyzer(), store=store)
-        await runtime.start()
-        accepted = await runtime.handle_message(msg(2, "обычный текст"))
-        await runtime.stop()
-        return accepted, store.upserts
-
-    assert asyncio.run(scenario()) == (False, 0)
-
-
-def test_status_exposes_recent_technical_events_without_message_text() -> None:
-    runtime = AddressDetectorRuntime(config(), Reactions(), analyzer=Analyzer(), store=Store())
-
-    runtime._event("candidate_detected")
-    runtime._event("analysis_uncertain")
-
-    status = runtime.status()
-    assert [(item["event"], item["count"]) for item in status["events"][-2:]] == [
-        ("candidate_detected", 1),
-        ("analysis_uncertain", 1),
+    direct_ids = [100, 101, 107]
+    assert len(store.created_batches) == 1
+    assert store.analyses == [
+        (100, "direct_familiar_address"), (101, "direct_familiar_address"),
+        (102, "ambiguous"), (103, "ambiguous"), (106, "ambiguous"),
+        (107, "direct_familiar_address"),
     ]
-    assert status["events"][-1]["at"]
-    assert "content" not in status["events"][-1]
+    assert reactions.events == [("add", item) for item in direct_ids]
+    assert signals == direct_ids
+    assert runtimes[0].status()["counters"]["direct_evidence_verified"] == 3
+    assert runtimes[0].status()["counters"]["direct_evidence_rejected"] == 3
+    outcomes = store.saved_audit_outcomes[-1]
+    direct_outcomes = [row for row in outcomes if row["action"] == "moderator_signal"]
+    assert {row["message_id"] for row in direct_outcomes} == set(direct_ids)
+    assert {row["message_id"] for row in outcomes if row["action"] != "moderator_signal"} == set(range(102, 107))
+    rejected = [row for row in outcomes if row.get("status") == "direct_evidence_rejected"]
+    assert {row["message_id"] for row in rejected} == {102, 103, 106}
+    assert all(row["model_classification"] == "direct_familiar_address" for row in rejected)
+    assert all(row["action_eligible"] is False for row in rejected)
+    assert all(row["evidence_validation"] == "rejected" for row in rejected)
+    assert {row["evidence"] for row in rejected} == {"Определитесь", "вам", "ты"}
+    assert len({row["action_token"] for row in direct_outcomes}) == 3
+    assert all(row["action_token"].endswith(f":{row['message_id']}:1") for row in direct_outcomes)
 
 
-def test_edit_invalidates_in_flight_result() -> None:
+def test_scheduler_never_classifies_durable_work_from_signal_channel(monkeypatch):
+    monkeypatch.setattr(runtime_module, "active_legacy_detector_tickets", lambda: [])
+    store, analyzer = Store(), Analyzer()
+    store.put_message_work(2, 32, 3, "обычный текст", None, {})
+
     async def scenario():
-        gate = asyncio.Event()
-        started = asyncio.Event()
-
-        class SlowAnalyzer:
-            async def analyze(self, context):
-                started.set()
-                await gate.wait()
-                reason = "old version" if context.raw_content == "ты где?" else "new version"
-                return AnalysisResult(Verdict.LIKELY_VIOLATION, 0.99, reason, "test")
-
-        store = Store()
-        signals = []
         runtime = AddressDetectorRuntime(
-            config(), Reactions(), analyzer=SlowAnalyzer(), store=store,
-            on_signal=lambda context, result, record: signals.append(context.message_id),
+            cfg(signals_channel_id="2"), Reactions(), analyzer=analyzer, store=store,
         )
         await runtime.start()
-        candidate = msg(14, "ты где?")
-        assert await runtime.handle_message(candidate)
-        await started.wait()
-        candidate.content = "ты там?"
-        await runtime.handle_edit(candidate)
-        gate.set()
-        await runtime.join()
-        status = runtime.status()
+        await asyncio.sleep(0.05)
         await runtime.stop()
-        return store, signals, status
 
-    store, signals, status = asyncio.run(scenario())
-    assert store.statuses[14] == "classified"
-    assert store.revisions[14] == 2
-    assert store.analyses == [(14, Verdict.LIKELY_VIOLATION)]
-    assert signals == [14]
-    assert status["counters"]["stale_result_ignored"] == 1
+    asyncio.run(scenario())
+    assert analyzer.tickets == 0
+    assert store.created_batches == []
+    assert store.work[(2, 32)]["state"] == "pending"
 
 
-def test_delete_ignores_in_flight_result() -> None:
+def test_101_messages_drain_as_13_semantic_batches_and_one_active_ticket(monkeypatch):
+    monkeypatch.setattr(runtime_module, "active_legacy_detector_tickets", lambda: [])
+    store, analyzer = Store(), Analyzer()
+    messages = [message(1000 + i, f"ordinary {i}", author_id=i + 1) for i in range(101)]
+    resolve = {item.id: item for item in messages}
     async def scenario():
-        gate = asyncio.Event()
-        started = asyncio.Event()
+        runtime = AddressDetectorRuntime(cfg(), Reactions(), analyzer=analyzer, store=store,
+                                         resolve_message=lambda _c, mid: asyncio.sleep(0, result=resolve.get(mid)))
+        for item in messages:
+            await runtime.handle_message(item)
+        await runtime.start()
+        await runtime.join(); await runtime.stop()
+    asyncio.run(scenario())
+    assert analyzer.tickets == 13
+    assert analyzer.max_active == 1
+    assert [len(batch["items"]) for batch in store.created_batches] == [8] * 12 + [5]
 
-        class SlowAnalyzer:
-            async def analyze(self, context):
-                started.set()
-                await gate.wait()
-                return AnalysisResult(Verdict.LIKELY_VIOLATION, 0.99, "deleted version", "test")
 
-        store = Store()
-        signals = []
+def test_message_edit_creates_revision_even_after_initial_order_would_be_past(monkeypatch):
+    monkeypatch.setattr(runtime_module, "active_legacy_detector_tickets", lambda: [])
+    store, analyzer, item = Store(), Analyzer(), message(55, "first")
+    async def scenario():
+        runtime = AddressDetectorRuntime(cfg(), Reactions(), analyzer=analyzer, store=store,
+                                         resolve_message=lambda _c, _mid: asyncio.sleep(0, result=item))
+        await runtime.handle_message(item)
+        item.content = "edited after watermark"
+        await runtime.handle_edit(item)
+        await runtime.start()
+        await runtime.join(); await runtime.stop()
+    asyncio.run(scenario())
+    assert store.work[(2, 55)]["revision"] == 2
+    assert analyzer.tickets == 1
+    assert store.created_batches[0]["items"][0]["revision"] == 2
+
+
+def test_upgrade_cancels_and_requeues_legacy_background_ticket_without_old_batch(monkeypatch):
+    tickets = [{"ticket_id": 91, "client_id": "address_detector_background",
+                "idempotency_key": "legacy-batch", "status": "queued"}]
+    monkeypatch.setattr(runtime_module, "active_legacy_detector_tickets", lambda: list(tickets))
+    monkeypatch.setattr(runtime_module, "cancel_llm_ticket", lambda ticket_id: tickets.clear() or ticket_id == 91)
+    store, item = Store(), message(90, "ordinary message")
+    store.states[2] = {"key": "legacy-batch", "channel_id": 2,
+                       "items": [{"message_id": 90, "revision": 1}]}
+    async def scenario():
+        runtime = AddressDetectorRuntime(cfg(), Reactions(), analyzer=Analyzer(), store=store,
+                                         resolve_message=lambda _c, _mid: asyncio.sleep(0, result=item))
+        await runtime._reconcile_legacy_tickets()
+    asyncio.run(scenario())
+    assert store.states[2] is None
+    assert store.work[(2, 90)]["state"] == "pending"
+    assert store.work[(2, 90)]["revision"] == 1
+    assert tickets == []
+
+
+def test_legacy_ticket_is_cancelled_but_not_requeued_when_unified_mode_is_disabled(monkeypatch):
+    tickets = [{"ticket_id": 92, "client_id": "address_detector_background",
+                "idempotency_key": "legacy-batch", "status": "running"}]
+    monkeypatch.setattr(runtime_module, "active_legacy_detector_tickets", lambda: list(tickets))
+    monkeypatch.setattr(runtime_module, "cancel_llm_ticket", lambda ticket_id: tickets.clear() or ticket_id == 92)
+    store = Store()
+    store.states[2] = {"key": "legacy-batch", "channel_id": 2,
+                       "items": [{"message_id": 90, "revision": 1}]}
+
+    async def scenario():
         runtime = AddressDetectorRuntime(
-            config(), Reactions(), analyzer=SlowAnalyzer(), store=store,
-            on_signal=lambda context, result, record: signals.append(context.message_id),
+            cfg(llm_enabled=False), Reactions(), analyzer=Analyzer(), store=store,
+            resolve_message=lambda *_args: asyncio.sleep(0, result=None),
         )
-        await runtime.start()
-        assert await runtime.handle_message(msg(15, "ты где?"))
-        await started.wait()
-        await runtime.handle_delete(15)
-        gate.set()
-        await runtime.join()
-        status = runtime.status()
-        await runtime.stop()
-        return store, signals, status
+        await runtime._reconcile_legacy_tickets(requeue=False)
 
-    store, signals, status = asyncio.run(scenario())
-    assert store.statuses[15] == "deleted"
-    assert signals == []
-    assert status["counters"]["stale_result_ignored"] == 1
+    asyncio.run(scenario())
+    assert store.states[2] is None
+    assert store.work == {}
+    assert tickets == []
 
 
-def test_qwen_disabled_does_not_start_runtime_or_accept_candidates(monkeypatch) -> None:
-    import discord_bot.address_detector.qwen_shadow as qwen_module
-
-    def forbidden(*args, **kwargs):
-        raise AssertionError("Phase A disabled must not call the LLM gateway")
-
-    monkeypatch.setattr(qwen_module, "submit", forbidden)
-    monkeypatch.setattr(qwen_module, "poll", forbidden)
-    monkeypatch.setattr(qwen_module, "find_ticket", forbidden)
+def test_restart_resumes_saved_batch_without_building_a_duplicate(monkeypatch):
+    monkeypatch.setattr(runtime_module, "active_legacy_detector_tickets", lambda: [])
+    item, store, analyzer, reactions = message(93, "Ты можешь посмотреть третий раздел?"), Store(), Analyzer(), Reactions()
+    store.put_message_work(2, 93, 3, item.content, None, {"created_at": None})
+    batch = {"key": "address_detector:saved", "channel_id": 2, "state": "submitted",
+             "payload": {"classify_indexes": [0]},
+             "items": [{"message_id": 93, "revision": 1, "index": 0, "content": item.content,
+                        "author_id": 3, "reply_target_id": None, "payload": {}}],
+             "attempt": 0, "ticket_id": 44, "applied_indexes": []}
+    store.states[2] = batch
 
     async def scenario():
-        disabled = DetectorConfig(enabled=True, monitored_channel_ids={2}, llm_enabled=False)
-        reactions = Reactions()
-        runtime = AddressDetectorRuntime(disabled, reactions, analyzer=LikelyAnalyzer(), store=Store())
+        runtime = AddressDetectorRuntime(cfg(), reactions, analyzer=analyzer, store=store,
+                                         resolve_message=lambda _c, _mid: asyncio.sleep(0, result=item))
         await runtime.start()
-        accepted = await runtime.handle_message(msg(16, "ты где?"))
-        tasks = runtime.service._workers
-        status = runtime.status()
+        await asyncio.wait_for(runtime.join(), 5)
         await runtime.stop()
-        return accepted, tasks, reactions.events, status
 
-    accepted, tasks, events, status = asyncio.run(scenario())
-    assert accepted is False
-    assert tasks == []
-    assert events == []
-    assert status["llm_enabled"] is False
+    asyncio.run(scenario())
+    assert analyzer.tickets == 1
+    assert store.created_batches == []
+    assert store.states[2] is None
+    assert reactions.events == []
 
 
-def test_background_default_off_does_not_submit_scoped_non_candidates() -> None:
+def test_scheduler_selects_pending_channels_round_robin():
+    from discord_bot.address_detector.scheduler import AddressDetectorScheduler
+
+    scheduler = AddressDetectorScheduler(None, None, None, None, None)
+    rows = [{"channel_id": channel_id} for channel_id in (1, 2, 3)]
+
+    assert [scheduler._next_channel_id(rows) for _ in range(7)] == [1, 2, 3, 1, 2, 3, 1]
+
+
+def test_scheduler_does_not_lose_wake_that_arrives_before_wait():
+    from discord_bot.address_detector.scheduler import AddressDetectorScheduler
+
     async def scenario():
-        store = Store()
-        runtime = AddressDetectorRuntime(
-            DetectorConfig(enabled=True, monitored_channel_ids={2}, llm_enabled=True),
-            Reactions(), analyzer=LikelyAnalyzer(), store=store,
-        )
-        await runtime.start()
-        accepted = await runtime.handle_message(msg(19, "обычное сообщение без обращения"))
-        status = runtime.status()
-        await runtime.stop()
-        return accepted, store, status
+        scheduler = AddressDetectorScheduler(None, None, None, None, None)
+        observed = scheduler._wake_version
+        scheduler.wake()
+        started = asyncio.get_running_loop().time()
+        await scheduler._wait(60, observed)
+        return asyncio.get_running_loop().time() - started
 
-    accepted, store, status = asyncio.run(scenario())
-    assert accepted is False
-    assert store.upserts == 0
-    assert status["background_batches_per_minute"] == 0
-    assert status["background_requests_per_minute"] == 0
+    assert asyncio.run(scenario()) < 0.1
 
 
-def test_edit_to_clean_removes_marker_and_updates_signal_state() -> None:
+class TimedWorkStore:
+    def __init__(self):
+        self.items = []
+        self.flushed = asyncio.Event()
+        self.loop = None
+        self.prepared_at = None
+
+    def enqueue(self, message_id):
+        self.items.append({"channel_id": 2, "message_id": message_id, "revision": 1,
+                           "event_order": message_id, "created": time.monotonic()})
+
+    def pending_work(self):
+        now = time.monotonic()
+        return [{**item, "age_seconds": now - item["created"]} for item in self.items]
+
+    def detector_channel_states(self):
+        return []
+
+    def save_active_batch(self, _channel_id, batch):
+        self.prepared_at = time.monotonic()
+        selected = {item["message_id"] for item in batch["items"]}
+        self.items = [item for item in self.items if item["message_id"] not in selected]
+        self.loop.call_soon_threadsafe(self.flushed.set)
+
+
+def _run_timed_scheduler(arrival_interval=None):
+    from discord_bot.address_detector.scheduler import AddressDetectorScheduler
+
     async def scenario():
-        reactions = Reactions()
-        store = Store()
-        edits = []
-        runtime = AddressDetectorRuntime(
-            config(), reactions, analyzer=CleanAnalyzer(), store=store,
-            on_edit_clean=lambda message_id: edits.append(message_id),
-        )
-        await runtime.start()
-        candidate = msg(3, "ты где?")
-        assert await runtime.handle_message(candidate)
-        await runtime.join()
-        candidate.content = "обычный текст"
-        await runtime.handle_edit(candidate)
-        await runtime.stop()
-        return reactions.events, edits
+        store = TimedWorkStore()
+        store.loop = asyncio.get_running_loop()
+        store.enqueue(1)
+        config = SimpleNamespace(llm_idle_debounce_seconds=0.5, llm_hard_batch_delay_seconds=2.0,
+                                 llm_max_new_messages=8,
+                                 scope=SimpleNamespace(monitored_channel_ids={2}, excluded_channel_ids=set()))
 
-    events, edits = asyncio.run(scenario())
-    assert events == [("add", 3), ("remove", 3), ("add", 3), ("remove", 3)]
-    assert edits == [3]
+        async def prepare(_channel_id, items):
+            return {"items": items}
+
+        scheduler = AddressDetectorScheduler(config, store, prepare, lambda *_: None, lambda *_: None)
+        started = time.monotonic()
+        await scheduler.start()
+        try:
+            if arrival_interval is not None:
+                for message_id in range(2, 9):
+                    await asyncio.sleep(arrival_interval)
+                    store.enqueue(message_id)
+                    scheduler.wake()
+            await asyncio.wait_for(store.flushed.wait(), timeout=1.2 if arrival_interval is None else 1.0)
+            return store.prepared_at - started
+        finally:
+            await scheduler.stop()
+
+    return asyncio.run(scenario())
+
+
+def test_single_message_flushes_after_idle_debounce():
+    elapsed = _run_timed_scheduler()
+    assert 0.4 <= elapsed < 0.8
+
+
+def test_continuous_arrivals_flush_at_hard_deadline():
+    elapsed = _run_timed_scheduler(arrival_interval=0.25)
+    assert 1.8 <= elapsed < 2.4
+
+
+def test_terminal_result_persistence_error_keeps_batch_active(monkeypatch):
+    store, analyzer = Store(), Analyzer("direct_familiar_address")
+    item = message(77, "глянь сюда")
+    batch = {
+        "key": "stable-batch", "channel_id": 2, "state": "prepared", "payload": {"classify_indexes": [0]},
+        "items": [{"message_id": 77, "revision": 1, "index": 0, "content": item.content,
+                   "author_id": 3, "reply_target_id": None, "payload": {}}],
+        "attempt": 0, "ticket_id": None, "applied_indexes": [],
+    }
+    store.states[2] = batch
+    update = store.update_batch_state
+
+    def fail_terminal(_channel_id, _batch, state, **values):
+        if state == "terminal_received":
+            raise OSError("database unavailable")
+        return update(_channel_id, _batch, state, **values)
+
+    monkeypatch.setattr(store, "update_batch_state", fail_terminal)
+
+    async def scenario():
+        runtime = AddressDetectorRuntime(cfg(), Reactions(), analyzer=analyzer, store=store,
+                                         resolve_message=lambda _c, _mid: asyncio.sleep(0, result=item))
+        return await runtime._process_batch(2, batch), runtime
+
+    keep_waiting, runtime = asyncio.run(scenario())
+    assert keep_waiting is True
+    assert store.states[2]["state"] == "submitted"
+    assert store.work == {}
+    assert runtime.metrics["terminal_failures"] == 0
+
+
+def test_message_resolution_outage_keeps_terminal_batch_for_retry():
+    store = Store()
+    batch = {
+        "key": "stable-batch", "channel_id": 2, "state": "terminal_received",
+        "payload": {"classify_indexes": [0]}, "results": [{"index": 0,
+        "classification": "direct_familiar_address", "reason_code": "informal_imperative"}],
+        "timing": {"ticket_id": 44, "queue_wait_ms": 0, "backend_ms": 1, "total_ms": 2},
+        "items": [{"message_id": 77, "revision": 1, "index": 0, "content": "глянь сюда",
+                   "author_id": 3, "reply_target_id": None, "payload": {}}],
+        "applied_indexes": [],
+    }
+    store.states[2] = batch
+    store.work[(2, 77)] = {"channel_id": 2, "message_id": 77, "revision": 1,
+                           "content": "глянь сюда", "state": "pending"}
+
+    async def unavailable(*_args):
+        raise OSError("Discord history unavailable")
+
+    async def scenario():
+        runtime = AddressDetectorRuntime(cfg(), Reactions(), analyzer=Analyzer(), store=store,
+                                         resolve_message=unavailable)
+        try:
+            await runtime._process_batch(2, batch)
+        except OSError:
+            return
+        raise AssertionError("resolution outage should keep the result pending")
+
+    asyncio.run(scenario())
+    assert store.states[2]["state"] == "terminal_received"
+    assert store.states[2]["applied_indexes"] == []
+
+
+def test_missing_new_message_still_reserves_its_reply_target_payload_slot():
+    item = {"message_id": 200, "revision": 1, "author_id": 3, "content": "ты где?",
+            "reply_target_id": 100, "event_order": 200,
+            "payload": {"created_at": None, "mentions": [], "reply_target": None}}
+
+    async def scenario():
+        runtime = AddressDetectorRuntime(cfg(), Reactions(), analyzer=Analyzer(), store=Store(),
+                                         resolve_message=lambda *_args: asyncio.sleep(0, result=None))
+        return await runtime._prepare_batch(2, [item])
+
+    batch = asyncio.run(scenario())
+    assert len(batch["payload"]["messages"]) == 2
+    assert batch["payload"]["messages"][1]["reply_to"] == 0
