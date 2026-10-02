@@ -334,6 +334,7 @@ export interface LLMRuntime {
   auto_apply: boolean
   auto_interval_minutes: number
   live_analysis_enabled: boolean
+  live_control_enabled: boolean
   live_analysis_interval_seconds: number
   last_run_at: string | null
   history: { at: string; mode: string; summary: string; applied: number; rejected: number; confidence: number }[]
@@ -370,6 +371,9 @@ export interface LLMRunRecord {
       basis?: string
     }
     live_metrics?: Record<string, unknown>
+    live_proposal?: { action: string; reason_code: string; evidence: string[]; hold_seconds: number }
+    live_execution?: { status: string; action?: string; reason?: string }
+    findings?: { kind: string; detail: string; evidence: string }[]
     recommendations?: { title: string; detail: string }[]
     applied_changes?: { key: string; new_value: unknown; old_value?: unknown; reason?: string }[]
     proposed_changes?: { key: string; new_value: unknown; old_value?: unknown; reason?: string }[]
@@ -489,7 +493,7 @@ export const monsterSpawnApi = {
     api.get<{ runtime: LLMRuntime; deployment: LLMDeployment; endpoint_configured: boolean }>(`/api/v1/admin/monster-spawn/llm/runtime?server=${encodeURIComponent(server)}`),
   llmRuns: (server: string, limit = 30) =>
     api.get<{ runs: LLMRunRecord[] }>(`/api/v1/admin/monster-spawn/llm/runs?server=${encodeURIComponent(server)}&limit=${limit}`),
-  updateLLMRuntime: (server: string, body: Partial<Pick<LLMRuntime, "enabled" | "auto_apply" | "auto_interval_minutes" | "live_analysis_enabled" | "live_analysis_interval_seconds">>) =>
+  updateLLMRuntime: (server: string, body: Partial<Pick<LLMRuntime, "enabled" | "auto_apply" | "auto_interval_minutes" | "live_analysis_enabled" | "live_control_enabled" | "live_analysis_interval_seconds">>) =>
     api.put<{ status: string; runtime: LLMRuntime }>(`/api/v1/admin/monster-spawn/llm/runtime?server=${encodeURIComponent(server)}`, body),
   runLLM: (server: string, body: { mode: "analyze" | "apply" | "spawn"; instruction?: string }) =>
     api.post<{ status: string; run: LLMRun }>(`/api/v1/admin/monster-spawn/llm/run?server=${encodeURIComponent(server)}`, body),
