@@ -155,6 +155,7 @@ def test_alive_threat_and_same_round_trends_detect_recognition_errors():
     assert current["estimated_monster_threat_points"] == 1
     assert current["workload_change"] == -10
     assert current["diagnostics"] == ["monster_state_count_mismatch:crawler"]
+    assert not current["control"]["spawn_ready"]
     assert service._live_metrics(world, telemetry, {}, {"round_key": "other", "workload_index": 10})["workload_change"] is None
 
 
@@ -178,6 +179,7 @@ def test_live_model_output_is_a_proposal_and_preserves_self_check():
     assert result["findings"][0]["kind"] == "recognition"
     assert chat.call_args.kwargs["timeout"] == 600
     assert chat.call_args.kwargs["max_tokens"] == 3072
+    assert "spawn_catalog" in chat.call_args.kwargs["messages"][1]["content"]
     assert sum(len(m["content"].encode()) for m in chat.call_args.kwargs["messages"]) < 23000
 
 
