@@ -1,0 +1,1 @@
+function e(e,t,n){return e?.trim()||t?.trim()||n}function t(e,t){return!t?.trim()||t.trim()===e?.trim()?null:t.trim()}export{t as n,e as t};

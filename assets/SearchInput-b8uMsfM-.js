@@ -1,0 +1,1 @@
+import{s as e,t}from"./utils-ojNcjBUy.js";import{It as n,On as r}from"./index-DzMN1bK3.js";var i=e();function a({className:e,...a}){return(0,i.jsxs)(`div`,{className:t(`relative`,e),children:[(0,i.jsx)(r,{className:`pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2 text-muted-foreground`}),(0,i.jsx)(n,{className:`pl-8`,...a})]})}export{a as t};
